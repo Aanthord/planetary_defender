@@ -433,7 +433,9 @@
                 this.n = n;
                 this.canvas = document.createElement('canvas');
                 this.gl = this.canvas.getContext('webgl2');
-                
+                this.lastInputLength = 0;
+                this.rhythmPhase = 0;
+
                 if (!this.gl) {
                     console.warn('WebGL2 not available, falling back to CPU');
                     this.useCPU = true;
@@ -477,7 +479,7 @@
                 
                 this.uploadState();
             }
-            
+
             createTexture() {
                 const gl = this.gl;
                 const texture = gl.createTexture();
@@ -569,7 +571,7 @@
                     this.state[i * 4 + 3] = 0.0;
                 }
             }
-            
+
             uploadState() {
                 if (this.useCPU) return;
                 const gl = this.gl;
@@ -577,53 +579,177 @@
                 gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, this.textureSize, this.textureSize,
                              0, gl.RGBA, gl.FLOAT, this.statePadded);
             }
-            
-            evolve() {
-                if (this.useCPU) {
-                    for (let i = 0; i < this.n; i++) {
-                        const p = this.state[i * 4];
-                        const q = this.state[i * 4 + 1];
-                        const dp = -Math.sin(q) * 0.05 - p * 0.02;
-                        const dq = Math.cos(p) * 0.05 - q * 0.02;
-                        this.state[i * 4] = (p + dp) * 0.98;
-                        this.state[i * 4 + 1] = (q + dq) * 0.98;
-                    }
-                    return;
+
+            evolveCPU() {
+                for (let i = 0; i < this.n; i++) {
+                    const base = i * 4;
+                    const p = this.state[base];
+                    const q = this.state[base + 1];
+                    const dp = -Math.sin(q) * 0.05 - p * 0.02;
+                    const dq = Math.cos(p) * 0.05 - q * 0.02;
+                    this.state[base] = (p + dp) * 0.98;
+                    this.state[base + 1] = (q + dq) * 0.98;
                 }
-                
+            }
+
+            runGPUPass() {
+                if (this.useCPU) return;
+
                 const gl = this.gl;
                 gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
-                gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, 
+                gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0,
                                        gl.TEXTURE_2D, this.outputTexture, 0);
-                
+
                 const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
                 if (status !== gl.FRAMEBUFFER_COMPLETE) {
                     console.error('Framebuffer incomplete, status:', status);
                     this.useCPU = true;
                     return;
                 }
-                
+
                 gl.viewport(0, 0, this.textureSize, this.textureSize);
                 gl.useProgram(this.program);
-                
+
                 gl.activeTexture(gl.TEXTURE0);
                 gl.bindTexture(gl.TEXTURE_2D, this.stateTexture);
                 gl.uniform1i(gl.getUniformLocation(this.program, 'stateTexture'), 0);
-                
+
                 gl.bindVertexArray(this.vao);
                 const posBuffer = gl.createBuffer();
                 gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
                 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
                     -1, -1,  1, -1,  -1, 1,  1, 1
                 ]), gl.STATIC_DRAW);
-                
+
                 const posLoc = gl.getAttribLocation(this.program, 'position');
                 gl.enableVertexAttribArray(posLoc);
                 gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
-                
+
                 gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-                
+
                 [this.stateTexture, this.outputTexture] = [this.outputTexture, this.stateTexture];
+            }
+
+            evolve() {
+                this.evolveCPU();
+
+                if (!this.useCPU) {
+                    this.statePadded.set(this.state);
+                    this.uploadState();
+                    this.runGPUPass();
+                }
+            }
+
+            inject(inputs) {
+                if (!inputs) return;
+                const len = Math.min(inputs.length, this.n);
+                this.lastInputLength = len;
+
+                for (let i = 0; i < len; i++) {
+                    const base = i * 4;
+                    const drive = inputs[i] || 0;
+                    this.state[base] = 0.94 * this.state[base] + 0.06 * drive;
+                    const sign = drive >= 0 ? 1 : -1;
+                    this.state[base + 1] = 0.94 * this.state[base + 1] + 0.03 * sign * Math.sqrt(Math.abs(drive));
+                    this.state[base + 2] = drive;
+                    this.state[base + 3] = this.state[base + 1];
+                }
+            }
+
+            static clamp(value, min, max) {
+                return Math.max(min, Math.min(max, value));
+            }
+
+            bandEnergy(start, length) {
+                if (!Number.isFinite(start) || !Number.isFinite(length)) return 0;
+                if (this.lastInputLength <= start) return 0;
+                const span = Math.max(0, Math.min(length, this.lastInputLength - start));
+                if (span <= 0) return 0;
+
+                let sum = 0;
+                for (let i = 0; i < span; i++) {
+                    const base = (start + i) * 4;
+                    const p = this.state[base];
+                    const q = this.state[base + 1];
+                    sum += Math.hypot(p, q);
+                }
+
+                return sum / span;
+            }
+
+            computeOrientationWeights(bands) {
+                const { SPATIAL_START = 0, SPATIAL_LEN = 0, STATUS_START = 0 } = bands || {};
+                if (SPATIAL_LEN <= 0) return [1, 1, 1, 1, 1, 1];
+
+                const segments = 8;
+                let x = 0;
+                let y = 0;
+                for (let s = 0; s < segments; s++) {
+                    const segStart = SPATIAL_START + Math.floor((SPATIAL_LEN / segments) * s);
+                    const segLen = Math.max(1, Math.floor(SPATIAL_LEN / segments));
+                    const energy = this.bandEnergy(segStart, segLen);
+                    const angle = (s / segments) * Math.PI * 2;
+                    x += Math.cos(angle) * energy;
+                    y += Math.sin(angle) * energy;
+                }
+
+                const statusUp = this.bandEnergy(STATUS_START, 2);
+                const statusDown = this.bandEnergy(STATUS_START + 2, 2);
+
+                const weights = [
+                    GPUFILManifold.clamp(Math.max(0, x), 0.05, 5),
+                    GPUFILManifold.clamp(Math.max(0, -x), 0.05, 5),
+                    GPUFILManifold.clamp(Math.max(0, y), 0.05, 5),
+                    GPUFILManifold.clamp(Math.max(0, -y), 0.05, 5),
+                    GPUFILManifold.clamp(statusUp, 0.05, 5),
+                    GPUFILManifold.clamp(statusDown, 0.05, 5)
+                ];
+
+                const maxVal = Math.max(...weights);
+                if (maxVal <= 0) {
+                    return [1, 1, 1, 1, 1, 1];
+                }
+
+                return weights.map(v => v / maxVal);
+            }
+
+            computeModulation(bands) {
+                const spatialEnergy = this.bandEnergy(bands?.SPATIAL_START || 0, bands?.SPATIAL_LEN || 0);
+                const threatEnergy = this.bandEnergy(bands?.THREAT_START || 0, bands?.THREAT_LEN || 0);
+                const statusEnergy = this.bandEnergy(bands?.STATUS_START || 0, 4);
+
+                this.rhythmPhase = (this.rhythmPhase + spatialEnergy * 0.15) % (Math.PI * 2);
+                const rhythm = Math.sin(this.rhythmPhase);
+
+                const cxGain = GPUFILManifold.clamp(0.8 + spatialEnergy * 0.9, 0.6, 1.8);
+                const threatGate = GPUFILManifold.clamp(0.7 + threatEnergy * 1.8, 0.4, 2.5);
+                const confidence = GPUFILManifold.clamp(0.8 + statusEnergy * 1.4, 0.5, 2.2);
+                const caution = GPUFILManifold.clamp(0.7 + threatEnergy * 1.2, 0.4, 2.5);
+                const mbTone = GPUFILManifold.clamp(0.9 + statusEnergy * 1.1, 0.5, 2.0);
+                const orientationWeights = this.computeOrientationWeights(bands);
+
+                const dopamineBias = GPUFILManifold.clamp((confidence - caution) * 0.35 + rhythm * 0.1, -0.4, 0.4);
+
+                return {
+                    cxGain,
+                    threatGate,
+                    confidence,
+                    caution,
+                    mbTone,
+                    dopamineBias,
+                    orientationWeights
+                };
+            }
+
+            process(inputs, bands) {
+                if (!(inputs instanceof Float32Array)) {
+                    inputs = Float32Array.from(inputs || []);
+                }
+
+                this.inject(inputs);
+                this.evolve();
+
+                return this.computeModulation(bands);
             }
         }
         
@@ -933,7 +1059,8 @@
                 }
                 
                 const sensory = this.encodeSensory(game);
-                
+                const modulation = this.brain.process(sensory, this.BANDS) || {};
+
                 // Check for urgent actions
                 if (game.asteroids.length === 0) {
                     this.currentStrategy = 'PATROL';
@@ -951,33 +1078,59 @@
                 
                 // 1. Antennal Lobe - threat sensing
                 const threats = sensory.slice(this.BANDS.THREAT_START, this.BANDS.THREAT_START + this.BANDS.THREAT_LEN);
+                if (modulation.threatGate) {
+                    const gate = modulation.threatGate;
+                    for (let i = 0; i < threats.length; i++) {
+                        threats[i] *= gate;
+                    }
+                }
                 this.al.step(threats);
-                
+
                 // 2. AL → MB
                 this.al.projectToKC(this.mb);
-                
+
                 // 3. MB forward + learning
                 this.mb.forward();
+                if (modulation.mbTone) {
+                    const tone = modulation.mbTone;
+                    for (let i = 0; i < this.mb.MBON.length; i++) {
+                        this.mb.MBON[i] = Math.max(0, Math.min(1, this.mb.MBON[i] * tone));
+                    }
+                }
                 const reward = this.computeReward(game, targetAsteroid);
-                const dopamine = this.computeDopamine(reward);
+                let dopamine = this.computeDopamine(reward);
+                if (Number.isFinite(modulation.dopamineBias)) {
+                    dopamine = Math.max(-1, Math.min(1, dopamine + modulation.dopamineBias));
+                }
                 if (Math.abs(dopamine) > 0.01) {
                     this.mb.learn(dopamine);
                 }
-                
+
                 // 4. CX orientation
                 const spatialBump = this.spatialToBump(sensory);
-                this.cx.step(spatialBump, 1.0);
-                
+                this.cx.step(spatialBump, modulation.cxGain || 1.0);
+
                 // 5. LAL action
                 const mbValence = this.mb.getValence();
+                if (modulation.confidence) {
+                    mbValence.approach = Math.min(2, mbValence.approach * modulation.confidence);
+                }
+                if (modulation.caution) {
+                    mbValence.avoid = Math.min(2, mbValence.avoid * modulation.caution);
+                }
                 const targetKey = `${targetAsteroid.userData.id}`;
                 const targetThreat = this.threatMap.get(targetKey);
+                const baseThreat = Math.min(1.0, (targetThreat?.threat || 0) / 10);
                 const threatInfo = {
-                    approach: Math.min(1.0, (targetThreat?.threat || 0) / 10)
+                    approach: Math.min(1.0, baseThreat * (modulation.threatGate || 1))
                 };
-                
+
                 const orientation = this.computeSwarmOrientation(game, targetAsteroid);
-                const action = this.lal.step(orientation, mbValence, threatInfo);
+                const orientationWeights = modulation.orientationWeights;
+                const oriented = orientationWeights
+                    ? orientation.map((value, idx) => value * orientationWeights[idx])
+                    : orientation;
+                const action = this.lal.step(oriented, mbValence, threatInfo);
                 
                 // Determine strategy based on 1 AU engagement window
                 const distToTarget = targetAsteroid.position.distanceTo(new THREE.Vector3(0, 0, 0));
