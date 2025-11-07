@@ -177,11 +177,15 @@
                 <h3>RUNTIME CONFIG</h3>
                 <div class="control-group">
                     <div class="key">Swarm Size Target: <span id="swarm-target" class="stat">50</span></div>
-                    <input type="range" id="satellite-slider" min="10" max="5000" step="10" value="50">
+                    <input type="range" id="satellite-slider" min="10" max="200" step="10" value="50">
                 </div>
                 <div class="control-group">
                     <div class="key">Power Multiplier: <span id="power-multiplier" class="stat">1.0×</span></div>
                     <input type="range" id="power-slider" min="1" max="100" step="0.1" value="1">
+                </div>
+                <div class="control-group">
+                    <div class="key">Time Scale: <span id="time-scale" class="stat">1.0×</span></div>
+                    <input type="range" id="time-slider" min="0.1" max="20" step="0.1" value="1">
                 </div>
             </div>
 
@@ -1179,7 +1183,8 @@
                 this.beams = [];
                 this.basePowerPerSatelliteMW = 1.1;
                 this.powerMultiplier = 1;
-                this.maxSatelliteCapacity = 5000;
+                this.timeScale = 1;
+                this.maxSatelliteCapacity = 200;
                 this.targetSatelliteCount = 50;
                 this.safeDeflectionDistance = 9000; // km, radius target for safe miss
                 this.swarmPower = 100;
@@ -1399,6 +1404,12 @@
                 this.updateSwarmTelemetry();
             }
 
+            setTimeScale(scale) {
+                const clamped = Math.max(0.1, Math.min(20, scale));
+                this.timeScale = Math.round(clamped * 10) / 10;
+                this.updateSwarmTelemetry();
+            }
+
             redistributeSatellites() {
                 const count = this.satellites.length;
                 if (count === 0) return;
@@ -1453,6 +1464,14 @@
                 const powerSlider = document.getElementById('power-slider');
                 if (powerSlider) {
                     powerSlider.value = this.powerMultiplier.toFixed(1);
+                }
+                const timeScaleEl = document.getElementById('time-scale');
+                if (timeScaleEl) {
+                    timeScaleEl.textContent = this.timeScale.toFixed(1) + '×';
+                }
+                const timeSlider = document.getElementById('time-slider');
+                if (timeSlider) {
+                    timeSlider.value = this.timeScale.toFixed(1);
                 }
             }
 
@@ -1609,9 +1628,10 @@
 
                 console.log('🔄 Simulation reset');
             }
-            
+
             update() {
-                this.physics.integrate(DT);
+                const deltaTime = DT * this.timeScale;
+                this.physics.integrate(deltaTime);
                 this.modifiedEnergy = this.physics.computeModifiedEnergy();
 
                 if (this.agent && typeof this.agent.decayMemories === 'function') {
@@ -1660,7 +1680,7 @@
                         const toIdeal = new THREE.Vector3().subVectors(idealPos, sat.position);
                         if (toIdeal.lengthSq() > 1) {
                             const adjustAccel = toIdeal.normalize().multiplyScalar(0.0005);
-                            sat.userData.velocity.addScaledVector(adjustAccel, DT);
+                            sat.userData.velocity.addScaledVector(adjustAccel, deltaTime);
                         }
 
                         if (this.agent && typeof this.agent.recordOptimalPosition === 'function') {
@@ -1910,7 +1930,7 @@
                         .normalize();
                     
                     const thrustBoost = 100;
-                    const deltaV = finalThrustDir.clone().multiplyScalar((accel * DT * thrustBoost) / 1000);
+                    const deltaV = finalThrustDir.clone().multiplyScalar((accel * deltaTime * thrustBoost) / 1000);
                     this.currentTarget.userData.velocity.add(deltaV);
 
                     // Apply TORQUE from off-center thrust
@@ -1925,7 +1945,7 @@
                     
                     const torqueAxis = torque.normalize();
                     this.currentTarget.userData.angularVelocity.add(
-                        torqueAxis.multiplyScalar(angularAccel * DT)
+                        torqueAxis.multiplyScalar(angularAccel * deltaTime)
                     );
                     
                     // Clamp angular velocity to prevent visual chaos
@@ -1949,7 +1969,7 @@
                     this.thrustForce = F_thrust;
                     
                     // Log physics periodically
-                    if (Math.random() < DT) {
+                    if (Math.random() < Math.min(1, deltaTime)) {
                         const spinRate = this.currentTarget.userData.angularVelocity.length() * 180 / Math.PI;
                         console.log(`🔥 P=${(P_laser/1e6).toFixed(2)}MW | Ablation=${m_dot.toFixed(4)}kg/s | Thrust=${F_thrust.toFixed(2)}N | ΔV=${totalDeltaV.toFixed(2)}m/s | Spin=${spinRate.toFixed(1)}°/s`);
                     }
@@ -2106,6 +2126,14 @@
                 if (powerMultiplierEl) {
                     powerMultiplierEl.textContent = this.powerMultiplier.toFixed(1) + '×';
                 }
+                const timeScaleEl = document.getElementById('time-scale');
+                if (timeScaleEl) {
+                    timeScaleEl.textContent = this.timeScale.toFixed(1) + '×';
+                }
+                const timeSlider = document.getElementById('time-slider');
+                if (timeSlider) {
+                    timeSlider.value = this.timeScale.toFixed(1);
+                }
 
                 const coherence = this.convergence > 50 ? 100 : Math.floor(this.convergence * 2);
                 document.getElementById('coherence').textContent = coherence;
@@ -2208,6 +2236,16 @@
                 const value = parseFloat(event.target.value);
                 if (!Number.isNaN(value)) {
                     space.setPowerMultiplier(value);
+                }
+            });
+        }
+
+        const timeSlider = document.getElementById('time-slider');
+        if (timeSlider) {
+            timeSlider.addEventListener('input', (event) => {
+                const value = parseFloat(event.target.value);
+                if (!Number.isNaN(value)) {
+                    space.setTimeScale(value);
                 }
             });
         }
