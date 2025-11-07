@@ -1102,6 +1102,49 @@
                 this.earthHits++;
                 this.addScore(-500, 'IMPACT');
             }
+
+            decayMemories() {
+                for (const [key, entry] of this.trajectoryMemory.entries()) {
+                    entry.age = (entry.age || 0) + 1;
+                    if (entry.age > 600) {
+                        this.trajectoryMemory.delete(key);
+                    }
+                }
+
+                for (const [key, entry] of this.optimalPositions.entries()) {
+                    entry.age = (entry.age || 0) + 1;
+                    if (entry.age > 300) {
+                        this.optimalPositions.delete(key);
+                    }
+                }
+            }
+
+            recordTrajectory(asteroidId, originalPoints = [], currentPoints = []) {
+                const clonePoints = (points) => points.map(p => ({ x: p.x, y: p.y, z: p.z }));
+                this.trajectoryMemory.set(asteroidId, {
+                    original: clonePoints(originalPoints),
+                    current: clonePoints(currentPoints),
+                    age: 0,
+                    updated: Date.now()
+                });
+            }
+
+            forgetTrajectory(asteroidId) {
+                this.trajectoryMemory.delete(asteroidId);
+            }
+
+            recordOptimalPosition(satId, position) {
+                if (!position) return;
+                this.optimalPositions.set(satId, {
+                    position: { x: position.x, y: position.y, z: position.z },
+                    age: 0,
+                    updated: Date.now()
+                });
+            }
+
+            forgetOptimalPosition(satId) {
+                this.optimalPositions.delete(satId);
+            }
         }
         
         // ============================================================================
@@ -1301,7 +1344,8 @@
                 
                 sat.userData = {
                     power: 100,
-                    mirrorAngle: new THREE.Vector2(0, 0)
+                    mirrorAngle: new THREE.Vector2(0, 0),
+                    id: sat.uuid
                 };
 
                 const relPos = sat.position.clone().sub(this.earth.position);
@@ -1322,6 +1366,9 @@
                 if (!sat) return;
                 this.scene.remove(sat);
                 this.physics.deregisterBody(sat);
+                if (this.agent && typeof this.agent.forgetOptimalPosition === 'function') {
+                    this.agent.forgetOptimalPosition(sat.uuid);
+                }
             }
 
             setTargetSatelliteCount(count) {
@@ -1552,6 +1599,11 @@
                 this.agent.earthHits = 0;
                 this.agent.deflections = 0;
                 this.agent.wave = 1;
+                if (this.agent) {
+                    this.agent.threatMap.clear();
+                    this.agent.trajectoryMemory.clear();
+                    this.agent.optimalPositions.clear();
+                }
 
                 this.modifiedEnergy = this.physics.computeModifiedEnergy();
 
@@ -1561,6 +1613,10 @@
             update() {
                 this.physics.integrate(DT);
                 this.modifiedEnergy = this.physics.computeModifiedEnergy();
+
+                if (this.agent && typeof this.agent.decayMemories === 'function') {
+                    this.agent.decayMemories();
+                }
 
                 if (!this.currentTarget) {
                     this.trajectoryPool.forEach(t => t.visible = false);
@@ -1606,6 +1662,10 @@
                             const adjustAccel = toIdeal.normalize().multiplyScalar(0.0005);
                             sat.userData.velocity.addScaledVector(adjustAccel, DT);
                         }
+
+                        if (this.agent && typeof this.agent.recordOptimalPosition === 'function') {
+                            this.agent.recordOptimalPosition(sat.uuid, idealPos);
+                        }
                     }
 
                     sat.lookAt(this.currentTarget ? this.currentTarget.position : this.earth.position);
@@ -1623,10 +1683,12 @@
                         let poolIdx = 0;
                         const trajDt = 120; // seconds per prediction step
 
+                        let origPoints = null;
+
                         if (ast.userData.originalPosition && ast.userData.originalVelocity) {
                             const origPos = ast.userData.originalPosition.clone();
                             const origVel = ast.userData.originalVelocity.clone();
-                            const origPoints = [origPos.clone()];
+                            origPoints = [origPos.clone()];
 
                             for (let i = 0; i < 100; i++) {
                                 origPos.addScaledVector(origVel, trajDt);
@@ -1652,7 +1714,7 @@
 
                         const futurePos = ast.position.clone();
                         const futureVel = ast.userData.velocity.clone();
-                        const currentPoints = [futurePos.clone()];
+                        let currentPoints = [futurePos.clone()];
 
                         for (let i = 0; i < 100; i++) {
                             futurePos.addScaledVector(futureVel, trajDt);
@@ -1676,12 +1738,23 @@
                             traj.material.color.setHex(willHit ? 0xff8800 : 0x00ff00);
                             traj.visible = true;
                         }
+
+                        if (this.agent && typeof this.agent.recordTrajectory === 'function') {
+                            this.agent.recordTrajectory(
+                                ast.userData.id,
+                                origPoints || [],
+                                currentPoints || []
+                            );
+                        }
                     }
 
                     const dist = ast.position.length();
                     if (dist < 6500) {
                         console.log('💥 EARTH IMPACT!');
                         this.agent.onEarthHit();
+                        if (this.agent && typeof this.agent.forgetTrajectory === 'function') {
+                            this.agent.forgetTrajectory(ast.userData.id);
+                        }
                         this.physics.deregisterBody(ast);
                         this.scene.remove(ast);
                         this.asteroids.splice(idx, 1);
@@ -1697,6 +1770,9 @@
                     }
 
                     if (dist > 350000) {
+                        if (this.agent && typeof this.agent.forgetTrajectory === 'function') {
+                            this.agent.forgetTrajectory(ast.userData.id);
+                        }
                         this.physics.deregisterBody(ast);
                         this.scene.remove(ast);
                         this.asteroids.splice(idx, 1);
@@ -1943,7 +2019,11 @@
                         console.log(`  Approach velocity: ${velTowardEarth.toFixed(1)} m/s ${approaching ? '(slowed)' : '(REVERSED!)'}`);
                         console.log(`  Distance: ${(distToEarth/150000).toFixed(2)} AU`);
                         this.agent.onDeflection(this.currentTarget);
-                        
+
+                        if (this.agent && typeof this.agent.forgetTrajectory === 'function') {
+                            this.agent.forgetTrajectory(this.currentTarget.userData.id);
+                        }
+
                         this.physics.deregisterBody(this.currentTarget);
                         this.scene.remove(this.currentTarget);
                         const idx = this.asteroids.indexOf(this.currentTarget);
