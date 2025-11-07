@@ -1,0 +1,1369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SWARM DEFENSE - Fruit Fly Brain Satellite Control</title>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.150.0/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.150.0/examples/js/controls/OrbitControls.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #000;
+            font-family: 'Courier New', monospace;
+            overflow: hidden;
+        }
+        #game-container {
+            display: flex;
+            width: 100vw;
+            height: 100vh;
+        }
+        #legend {
+            width: 380px;
+            background: rgba(0, 0, 0, 0.95);
+            color: #00ff00;
+            padding: 12px;
+            overflow-y: auto;
+            border-right: 2px solid #00ff00;
+            font-size: 10px;
+            z-index: 100;
+        }
+        #legend h3 {
+            color: #00ffff;
+            margin: 8px 0 4px 0;
+            font-size: 12px;
+            border-bottom: 1px solid #00ffff;
+        }
+        #legend .key {
+            margin: 3px 0;
+            line-height: 1.2;
+        }
+        #legend .stat {
+            color: #ffff00;
+            font-weight: bold;
+        }
+        .section {
+            margin-bottom: 10px;
+        }
+        .warning {
+            color: #ff6600;
+            font-weight: bold;
+        }
+        .danger {
+            color: #ff0000;
+            font-weight: bold;
+            animation: pulse 1s infinite;
+        }
+        .quantum {
+            color: #00ffff;
+            font-weight: bold;
+        }
+        .brain {
+            color: #ff00ff;
+            font-weight: bold;
+            text-shadow: 0 0 3px #ff00ff;
+        }
+        .gpu {
+            color: #00ff00;
+            font-weight: bold;
+            text-shadow: 0 0 5px #00ff00;
+        }
+        .swarm {
+            color: #ffd700;
+            font-weight: bold;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        #three-canvas {
+            flex: 1;
+        }
+        #target-hud {
+            position: absolute;
+            top: 20px;
+            right: 400px;
+            color: #00ff00;
+            font-size: 14px;
+            text-shadow: 0 0 5px #00ff00;
+            pointer-events: none;
+        }
+        .alert {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 48px;
+            color: #ff0000;
+            text-shadow: 0 0 20px #ff0000;
+            animation: pulse 0.5s infinite;
+            pointer-events: none;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <div id="legend">
+            <h2 style="color: #ff6b6b; margin: 0 0 8px 0; font-size: 15px;">SWARM DEFENSE v1.0</h2>
+            <div style="color: #888; font-size: 9px; margin-bottom: 10px;">
+                <span class="brain">DROSOPHILA BRAIN</span> | 
+                <span class="gpu" id="gpu-status">GPU: READY</span> | 
+                <span class="quantum">100K FIL</span>
+            </div>
+            
+            <div class="section">
+                <h3>CONTROLS</h3>
+                <div class="key"><b>MOUSE</b> Rotate view</div>
+                <div class="key"><b>WHEEL</b> Zoom</div>
+                <div class="key"><b>SPACE</b> Auto-engage</div>
+                <div class="key"><b>A</b> Toggle AI</div>
+                <div class="key"><b>T</b> Target nearest</div>
+                <div class="key"><b>D</b> Deploy swarm</div>
+                <div class="key"><b>R</b> Reset simulation</div>
+            </div>
+
+            <div class="section">
+                <h3>SWARM BRAIN STATUS</h3>
+                <div class="key" id="ai-status">Mode: <span class="brain">AUTONOMOUS</span></div>
+                <div class="key">CX Orient: <span id="cx-heading" class="brain">0°</span></div>
+                <div class="key">MB Threat: <span id="mb-valence" class="stat">0.0</span></div>
+                <div class="key">Dopamine: <span id="dopamine" class="stat">0.0</span></div>
+                <div class="key">AL Sensors: <span id="al-active" class="stat">0</span></div>
+                <div class="key">Strategy: <span id="ai-strategy" class="brain">--</span></div>
+                <div class="key">Decisions: <span id="decisions" class="stat">0</span></div>
+            </div>
+
+            <div class="section">
+                <h3>MISSION STATUS</h3>
+                <div class="key">Score: <span id="score-display" class="stat">0</span></div>
+                <div class="key">High: <span id="high-score-display" class="stat">0</span></div>
+                <div class="key">Deflections: <span id="deflections" class="stat">0</span></div>
+                <div class="key">Earth Hits: <span id="earth-hits" class="danger">0</span></div>
+                <div class="key">Wave: <span id="wave" class="stat">1</span></div>
+            </div>
+
+            <div class="section">
+                <h3>SWARM COMPOSITION</h3>
+                <div class="key">Active: <span id="sats-active" class="swarm">12</span></div>
+                <div class="key">Formation: <span id="formation" class="stat">SPHERE</span></div>
+                <div class="key">Coherence: <span id="coherence" class="stat">100</span>%</div>
+                <div class="key">Power: <span id="power" class="stat">100</span>%</div>
+            </div>
+
+            <div class="section">
+                <h3>SOLAR MIRRORS</h3>
+                <div class="key">Focus: <span id="focus-quality" class="stat">0.0</span></div>
+                <div class="key">Convergence: <span id="convergence" class="stat">0</span>%</div>
+                <div class="key">Intensity: <span id="intensity" class="stat">0.0</span> GW</div>
+                <div class="key">Ablation: <span id="ablation-rate" class="stat">0.0</span> kg/s</div>
+            </div>
+
+            <div class="section">
+                <h3>TARGET TRACKING</h3>
+                <div class="key">Asteroids: <span id="asteroid-count" class="warning">0</span></div>
+                <div class="key">Locked: <span id="locked-target" class="stat">NONE</span></div>
+                <div class="key">Distance: <span id="target-distance" class="stat">--</span></div>
+                <div class="key">Velocity: <span id="target-velocity" class="stat">--</span></div>
+                <div class="key">Δv Required: <span id="delta-v" class="stat">--</span></div>
+                <div class="key">Impact ETA: <span id="impact-eta" class="danger">--</span></div>
+            </div>
+
+            <div class="section">
+                <h3>TECH UPGRADES</h3>
+                <div class="key">Mirror Area: <span id="mirror-area" class="stat">100</span> m²</div>
+                <div class="key">Swarm Size: <span id="max-sats" class="stat">12</span></div>
+                <div class="key">Detection: <span id="detection-range" class="stat">50</span> Mm</div>
+            </div>
+
+            <div class="section">
+                <h3>PHYSICS ENGINE</h3>
+                <div class="key">Photon Flux: <span id="photon-flux" class="quantum">1.0</span></div>
+                <div class="key">Ejecta ΔV: <span id="ejecta-dv" class="quantum">0.0</span></div>
+                <div class="key">Spall Rate: <span id="spall-rate" class="quantum">0.0</span></div>
+            </div>
+
+            <div class="section">
+                <h3>SPATIAL MEMORY</h3>
+                <div class="key">Threats: <span id="mem-danger" class="stat">0</span></div>
+                <div class="key">Trajectories: <span id="mem-visited" class="stat">0</span></div>
+                <div class="key">Optimal Pos: <span id="mem-boundaries" class="stat">0</span></div>
+            </div>
+        </div>
+        <div id="three-canvas"></div>
+        <div id="target-hud"></div>
+        <div id="alert" class="alert">⚠ IMPACT IMMINENT ⚠</div>
+    </div>
+    
+    <script>
+        // ============================================================================
+        // GPU-ACCELERATED FIL MANIFOLD - 100K CELLS (UNCHANGED)
+        // ============================================================================
+        
+        class GPUFILManifold {
+            constructor(n) {
+                this.n = n;
+                this.canvas = document.createElement('canvas');
+                this.gl = this.canvas.getContext('webgl2');
+                
+                if (!this.gl) {
+                    console.warn('WebGL2 not available, falling back to CPU');
+                    this.useCPU = true;
+                    this.state = new Float32Array(n * 4);
+                    this._initialize_golden();
+                    return;
+                }
+                
+                const ext = this.gl.getExtension('EXT_color_buffer_float');
+                if (!ext) {
+                    console.warn('EXT_color_buffer_float not available, falling back to CPU');
+                    this.useCPU = true;
+                    this.state = new Float32Array(n * 4);
+                    this._initialize_golden();
+                    return;
+                }
+                
+                this.useCPU = false;
+                this.textureSize = Math.ceil(Math.sqrt(n));
+                
+                this.stateTexture = this.createTexture();
+                this.outputTexture = this.createTexture();
+                this.framebuffer = this.gl.createFramebuffer();
+                this.program = this.createShaderProgram();
+                
+                if (!this.program) {
+                    console.warn('Shader compilation failed, falling back to CPU');
+                    this.useCPU = true;
+                    this.state = new Float32Array(n * 4);
+                    this._initialize_golden();
+                    return;
+                }
+                
+                this.state = new Float32Array(n * 4);
+                this._initialize_golden();
+                this.uploadState();
+            }
+            
+            createTexture() {
+                const gl = this.gl;
+                const texture = gl.createTexture();
+                gl.bindTexture(gl.TEXTURE_2D, texture);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, this.textureSize, this.textureSize, 
+                             0, gl.RGBA, gl.FLOAT, null);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                return texture;
+            }
+            
+            createShaderProgram() {
+                const gl = this.gl;
+                
+                const vertexShader = gl.createShader(gl.VERTEX_SHADER);
+                gl.shaderSource(vertexShader, `#version 300 es
+                    in vec2 position;
+                    out vec2 texCoord;
+                    void main() {
+                        texCoord = position * 0.5 + 0.5;
+                        gl_Position = vec4(position, 0.0, 1.0);
+                    }
+                `);
+                gl.compileShader(vertexShader);
+                
+                if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS)) {
+                    console.error('Vertex shader compile error:', gl.getShaderInfoLog(vertexShader));
+                    return null;
+                }
+                
+                const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
+                gl.shaderSource(fragmentShader, `#version 300 es
+                    precision highp float;
+                    in vec2 texCoord;
+                    out vec4 outColor;
+                    uniform sampler2D stateTexture;
+                    
+                    void main() {
+                        vec4 state = texture(stateTexture, texCoord);
+                        float p = state.x;
+                        float q = state.y;
+                        
+                        // Hamiltonian evolution
+                        float dp = -sin(q) * 0.05 - p * 0.02;
+                        float dq = cos(p) * 0.05 - q * 0.02;
+                        
+                        p += dp;
+                        q += dq;
+                        
+                        // Decay
+                        p *= 0.98;
+                        q *= 0.98;
+                        
+                        outColor = vec4(p, q, state.z, state.w);
+                    }
+                `);
+                gl.compileShader(fragmentShader);
+                
+                if (!gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS)) {
+                    console.error('Fragment shader compile error:', gl.getShaderInfoLog(fragmentShader));
+                    return null;
+                }
+                
+                const program = gl.createProgram();
+                gl.attachShader(program, vertexShader);
+                gl.attachShader(program, fragmentShader);
+                gl.linkProgram(program);
+                
+                if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+                    console.error('Shader program link error:', gl.getProgramInfoLog(program));
+                    return null;
+                }
+                
+                return program;
+            }
+            
+            _initialize_golden() {
+                const phi = (1 + Math.sqrt(5)) / 2;
+                const phi0 = 2 * Math.PI / phi;
+                for (let i = 0; i < this.n; i++) {
+                    this.state[i * 4] = Math.sin(phi0 * (i + 1)) * 0.1;
+                    this.state[i * 4 + 1] = Math.cos(phi0 * (i + 1)) * 0.1;
+                    this.state[i * 4 + 2] = 1.0;
+                    this.state[i * 4 + 3] = 0.0;
+                }
+            }
+            
+            uploadState() {
+                if (this.useCPU) return;
+                const gl = this.gl;
+                gl.bindTexture(gl.TEXTURE_2D, this.stateTexture);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, this.textureSize, this.textureSize,
+                             0, gl.RGBA, gl.FLOAT, this.state);
+            }
+            
+            evolve() {
+                if (this.useCPU) {
+                    for (let i = 0; i < this.n; i++) {
+                        const p = this.state[i * 4];
+                        const q = this.state[i * 4 + 1];
+                        const dp = -Math.sin(q) * 0.05 - p * 0.02;
+                        const dq = Math.cos(p) * 0.05 - q * 0.02;
+                        this.state[i * 4] = (p + dp) * 0.98;
+                        this.state[i * 4 + 1] = (q + dq) * 0.98;
+                    }
+                    return;
+                }
+                
+                const gl = this.gl;
+                gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
+                gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, 
+                                       gl.TEXTURE_2D, this.outputTexture, 0);
+                
+                const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+                if (status !== gl.FRAMEBUFFER_COMPLETE) {
+                    console.error('Framebuffer incomplete, status:', status);
+                    this.useCPU = true;
+                    return;
+                }
+                
+                gl.viewport(0, 0, this.textureSize, this.textureSize);
+                gl.useProgram(this.program);
+                
+                gl.activeTexture(gl.TEXTURE0);
+                gl.bindTexture(gl.TEXTURE_2D, this.stateTexture);
+                gl.uniform1i(gl.getUniformLocation(this.program, 'stateTexture'), 0);
+                
+                const posBuffer = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+                    -1, -1,  1, -1,  -1, 1,  1, 1
+                ]), gl.STATIC_DRAW);
+                
+                const posLoc = gl.getAttribLocation(this.program, 'position');
+                gl.enableVertexAttribArray(posLoc);
+                gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+                
+                gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+                
+                [this.stateTexture, this.outputTexture] = [this.outputTexture, this.stateTexture];
+            }
+        }
+        
+        // ============================================================================
+        // FRUIT FLY CIRCUIT MODULES (UNCHANGED)
+        // ============================================================================
+        
+        class CXRing {
+            constructor(M = 256) {
+                this.M = M;
+                this.r = new Float32Array(M);
+                this.K = 4;
+                
+                this.W = {
+                    center: 0.5,
+                    exc: new Float32Array(this.K + 1),
+                    inh: new Float32Array(this.K + 1)
+                };
+                
+                for (let k = 1; k <= this.K; k++) {
+                    this.W.exc[k] = 0.3 * Math.exp(-k * k / 4.0);
+                    this.W.inh[k] = -0.15 * Math.exp(-k * k / 8.0);
+                }
+                
+                this.wrapInh = 2;
+            }
+            
+            step(inputBump, gain = 1.0) {
+                const out = new Float32Array(this.M);
+                
+                for (let i = 0; i < this.M; i++) {
+                    let s = this.W.center * this.r[i];
+                    
+                    for (let k = 1; k <= this.K; k++) {
+                        const il = (i - k + this.M) % this.M;
+                        const ir = (i + k) % this.M;
+                        s += this.W.exc[k] * (this.r[il] + this.r[ir]);
+                        
+                        const iInhL = (i - k * this.wrapInh + this.M) % this.M;
+                        const iInhR = (i + k * this.wrapInh) % this.M;
+                        s += this.W.inh[k] * (this.r[iInhL] + this.r[iInhR]);
+                    }
+                    
+                    out[i] = Math.max(0, 0.92 * this.r[i] + 0.08 * (s + gain * inputBump[i]));
+                }
+                
+                this.r.set(out);
+            }
+            
+            getHeading() {
+                let maxIdx = 0;
+                let maxVal = this.r[0];
+                for (let i = 1; i < this.M; i++) {
+                    if (this.r[i] > maxVal) {
+                        maxVal = this.r[i];
+                        maxIdx = i;
+                    }
+                }
+                return maxIdx;
+            }
+            
+            getHeadingAngle() {
+                return (this.getHeading() / this.M) * 360;
+            }
+        }
+        
+        class MushroomBody {
+            constructor(nKC = 2000, nMBON = 12) {
+                this.nKC = nKC;
+                this.nMBON = nMBON;
+                
+                this.KC = new Float32Array(nKC);
+                this.KCthresh = 0.5;
+                
+                this.MBON = new Float32Array(nMBON);
+                
+                this.Wkm = new Float32Array(nKC * nMBON);
+                
+                for (let i = 0; i < this.Wkm.length; i++) {
+                    this.Wkm[i] = (Math.random() - 0.5) * 0.1;
+                }
+                
+                this.lrPos = 0.002;
+                this.lrNeg = 0.002;
+                this.decay = 0.9995;
+            }
+            
+            forward() {
+                this.MBON.fill(0);
+                for (let k = 0; k < this.nKC; k++) {
+                    if (this.KC[k] > this.KCthresh) {
+                        for (let m = 0; m < this.nMBON; m++) {
+                            this.MBON[m] += this.KC[k] * this.Wkm[k * this.nMBON + m];
+                        }
+                    }
+                }
+                
+                for (let m = 0; m < this.nMBON; m++) {
+                    this.MBON[m] = Math.max(0, Math.min(1, this.MBON[m]));
+                }
+            }
+            
+            learn(dopamine) {
+                const lr = dopamine > 0 ? this.lrPos : this.lrNeg;
+                const sign = dopamine > 0 ? 1 : -1;
+                
+                for (let k = 0; k < this.nKC; k++) {
+                    if (this.KC[k] > this.KCthresh) {
+                        for (let m = 0; m < this.nMBON; m++) {
+                            const idx = k * this.nMBON + m;
+                            this.Wkm[idx] += sign * lr * this.KC[k] * this.MBON[m] * Math.abs(dopamine);
+                            
+                            this.Wkm[idx] *= this.decay;
+                            this.Wkm[idx] = Math.max(-0.5, Math.min(0.5, this.Wkm[idx]));
+                        }
+                    }
+                }
+            }
+            
+            getValence() {
+                let approach = 0;
+                let avoid = 0;
+                for (let i = 0; i < 6; i++) approach += this.MBON[i];
+                for (let i = 6; i < 12; i++) avoid += this.MBON[i];
+                return { approach: approach / 6, avoid: avoid / 6 };
+            }
+        }
+        
+        class AntennalLobe {
+            constructor(nGlom = 60) {
+                this.nGlom = nGlom;
+                this.r = new Float32Array(nGlom);
+                this.W = new Float32Array(nGlom).fill(1.0);
+                this.gInh = 0.3;
+            }
+            
+            step(odorIn) {
+                const mean = this.r.reduce((a, b) => a + b, 0) / this.nGlom;
+                
+                for (let i = 0; i < this.nGlom; i++) {
+                    const drive = this.W[i] * (odorIn[i] || 0);
+                    this.r[i] = Math.max(0, 0.9 * this.r[i] + 0.1 * (drive - this.gInh * mean));
+                }
+            }
+            
+            projectToKC(mb) {
+                for (let k = 0; k < mb.nKC; k++) {
+                    let sum = 0;
+                    for (let s = 0; s < 6; s++) {
+                        const g = Math.floor(Math.random() * this.nGlom);
+                        sum += this.r[g];
+                    }
+                    mb.KC[k] = Math.tanh(sum / 6);
+                }
+            }
+            
+            getActiveGlomeruli() {
+                let count = 0;
+                for (let i = 0; i < this.nGlom; i++) {
+                    if (this.r[i] > 0.1) count++;
+                }
+                return count;
+            }
+        }
+        
+        class LALGate {
+            constructor() {
+                this.ch = new Float32Array(6); // X+, X-, Y+, Y-, Z+, Z-
+            }
+            
+            step(orientation, mbValence, threats) {
+                const avoid = threats.approach * 3.0;
+                const engage = mbValence.approach * 2.0;
+                
+                for (let i = 0; i < 6; i++) {
+                    const axisSteer = orientation[i] || 0;
+                    this.ch[i] = Math.max(0, 
+                        0.85 * this.ch[i] + 
+                        0.15 * (axisSteer * engage - avoid)
+                    );
+                }
+                
+                let maxIdx = 0;
+                let maxVal = this.ch[0];
+                for (let i = 1; i < 6; i++) {
+                    if (this.ch[i] > maxVal) {
+                        maxVal = this.ch[i];
+                        maxIdx = i;
+                    }
+                }
+                
+                return ['X+', 'X-', 'Y+', 'Y-', 'Z+', 'Z-'][maxIdx];
+            }
+        }
+        
+        // ============================================================================
+        // SWARM DEFENSE AGENT - Fruit Fly Brain Controlling Satellites
+        // ============================================================================
+        
+        class SwarmDefenseAgent {
+            constructor() {
+                this.active = true;
+                this.decisions = 0;
+                this.tick = 0;
+                this.currentStrategy = 'PATROL';
+                
+                // FIL manifold
+                this.brain = new GPUFILManifold(100000);
+                
+                // Fly circuits
+                this.cx = new CXRing(256);
+                this.mb = new MushroomBody(2000, 12);
+                this.al = new AntennalLobe(60);
+                this.lal = new LALGate();
+                
+                // Sensory bands
+                this.BANDS = {
+                    SPATIAL_START: 0,
+                    SPATIAL_LEN: 2048,
+                    THREAT_START: 2560,
+                    THREAT_LEN: 512,
+                    STATUS_START: 3584
+                };
+                
+                // Learning
+                this._prevR = 0;
+                this.dopamine = 0;
+                
+                // Memory
+                this.threatMap = new Map();
+                this.trajectoryMemory = new Map();
+                this.optimalPositions = new Map();
+                
+                // Scoring
+                this.score = 0;
+                this.highScore = parseInt(localStorage.getItem('swarm_high_score') || '0');
+                this.deflections = 0;
+                this.earthHits = 0;
+                this.wave = 1;
+                
+                console.log('🛰️ SWARM DEFENSE initialized!', this.brain.useCPU ? 'CPU' : 'GPU');
+                document.getElementById('gpu-status').textContent = this.brain.useCPU ? 'CPU: FALLBACK' : 'GPU: READY';
+            }
+            
+            toggle() {
+                this.active = !this.active;
+                return this.active;
+            }
+            
+            updateMemory(game) {
+                // Track threats
+                for (const [key, mem] of this.threatMap.entries()) {
+                    mem.age++;
+                    mem.threat *= 0.95;
+                    if (mem.threat < 0.1 || mem.age > 100) {
+                        this.threatMap.delete(key);
+                    }
+                }
+                
+                game.asteroids.forEach(ast => {
+                    const key = `${ast.id}`;
+                    const threat = this.calculateThreatLevel(ast, game);
+                    this.threatMap.set(key, { 
+                        threat, 
+                        age: 0, 
+                        position: ast.position.clone(),
+                        velocity: ast.velocity.clone()
+                    });
+                });
+            }
+            
+            calculateThreatLevel(asteroid, game) {
+                const distToEarth = asteroid.position.distanceTo(game.earth.position);
+                const timeToImpact = distToEarth / asteroid.velocity.length();
+                const size = asteroid.radius;
+                
+                let threat = (size / 100) * 10; // Size factor
+                threat += Math.max(0, 100 / (timeToImpact + 1)); // Urgency
+                threat += Math.max(0, 50 / (distToEarth / 1000)); // Proximity
+                
+                return threat;
+            }
+            
+            decide(game) {
+                if (!this.active) return null;
+                this.decisions++;
+                this.tick++;
+                
+                this.updateMemory(game);
+                
+                if (this.tick % 50 === 0) {
+                    console.log(`🧠 SWARM: Threats=${this.threatMap.size}, Strategy=${this.currentStrategy}`);
+                }
+                
+                const sensory = this.encodeSensory(game);
+                
+                // Check for urgent actions
+                if (game.asteroids.length === 0) {
+                    this.currentStrategy = 'PATROL';
+                    return { type: 'PATROL' };
+                }
+                
+                // Find highest threat
+                const targetAsteroid = this.selectTarget(game);
+                if (!targetAsteroid) {
+                    this.currentStrategy = 'SEARCH';
+                    return { type: 'SEARCH' };
+                }
+                
+                // FRUIT FLY PROCESSING
+                
+                // 1. Antennal Lobe - threat sensing
+                const threats = sensory.slice(this.BANDS.THREAT_START, this.BANDS.THREAT_START + this.BANDS.THREAT_LEN);
+                this.al.step(threats);
+                
+                // 2. AL → MB
+                this.al.projectToKC(this.mb);
+                
+                // 3. MB forward + learning
+                this.mb.forward();
+                const reward = this.computeReward(game, targetAsteroid);
+                const dopamine = this.computeDopamine(reward);
+                if (Math.abs(dopamine) > 0.01) {
+                    this.mb.learn(dopamine);
+                }
+                
+                // 4. CX orientation
+                const spatialBump = this.spatialToBump(sensory);
+                this.cx.step(spatialBump, 1.0);
+                
+                // 5. LAL action
+                const mbValence = this.mb.getValence();
+                const threatInfo = {
+                    approach: Math.min(1.0, this.threatMap.get(`${targetAsteroid.id}`)?.threat || 0 / 10)
+                };
+                
+                const orientation = this.computeSwarmOrientation(game, targetAsteroid);
+                const action = this.lal.step(orientation, mbValence, threatInfo);
+                
+                // Determine strategy
+                const distToTarget = targetAsteroid.position.distanceTo(new THREE.Vector3(0, 0, 0));
+                
+                if (distToTarget < 5000) {
+                    this.currentStrategy = 'ENGAGE';
+                    return { 
+                        type: 'ENGAGE', 
+                        target: targetAsteroid,
+                        formation: 'FOCUS'
+                    };
+                } else if (distToTarget < 15000) {
+                    this.currentStrategy = 'INTERCEPT';
+                    return { 
+                        type: 'MOVE_TO_INTERCEPT', 
+                        target: targetAsteroid,
+                        formation: 'SPHERE'
+                    };
+                } else {
+                    this.currentStrategy = 'DETECT';
+                    return { 
+                        type: 'DETECT', 
+                        target: targetAsteroid,
+                        formation: 'SPREAD'
+                    };
+                }
+            }
+            
+            selectTarget(game) {
+                if (game.asteroids.length === 0) return null;
+                
+                let bestTarget = null;
+                let maxThreat = -Infinity;
+                
+                game.asteroids.forEach(ast => {
+                    const threat = this.calculateThreatLevel(ast, game);
+                    if (threat > maxThreat) {
+                        maxThreat = threat;
+                        bestTarget = ast;
+                    }
+                });
+                
+                return bestTarget;
+            }
+            
+            computeSwarmOrientation(game, target) {
+                const dir = new THREE.Vector3()
+                    .subVectors(target.position, new THREE.Vector3(0, 0, 0))
+                    .normalize();
+                
+                return [
+                    Math.max(0, dir.x), Math.max(0, -dir.x),
+                    Math.max(0, dir.y), Math.max(0, -dir.y),
+                    Math.max(0, dir.z), Math.max(0, -dir.z)
+                ];
+            }
+            
+            encodeSensory(game) {
+                const sensory = new Float32Array(4096);
+                const { SPATIAL_START, SPATIAL_LEN, THREAT_START, THREAT_LEN, STATUS_START } = this.BANDS;
+                
+                // Spatial encoding - asteroid directions
+                game.asteroids.forEach(ast => {
+                    const dir = new THREE.Vector3().subVectors(ast.position, game.earth.position).normalize();
+                    const theta = Math.atan2(dir.y, dir.x);
+                    const phi = Math.acos(dir.z);
+                    
+                    const idx = Math.floor(((theta + Math.PI) / (2 * Math.PI)) * SPATIAL_LEN);
+                    const threat = this.calculateThreatLevel(ast, game);
+                    
+                    for (let offset = -20; offset <= 20; offset++) {
+                        const i = (SPATIAL_START + ((idx + offset + SPATIAL_LEN) % SPATIAL_LEN));
+                        sensory[i] += threat * Math.exp(-offset * offset / 50);
+                    }
+                });
+                
+                // Threat encoding
+                for (let i = 0; i < THREAT_LEN; i++) {
+                    const angle = (i / THREAT_LEN) * 2 * Math.PI;
+                    const dir = new THREE.Vector3(Math.cos(angle), Math.sin(angle), 0);
+                    
+                    let threat = 0;
+                    game.asteroids.forEach(ast => {
+                        const astDir = new THREE.Vector3().subVectors(ast.position, game.earth.position).normalize();
+                        const dot = dir.dot(astDir);
+                        
+                        if (dot > 0.7) {
+                            const dist = ast.position.length();
+                            threat += Math.max(0, 10.0 * (1.0 - dist / 50000) * dot);
+                        }
+                    });
+                    
+                    sensory[THREAT_START + i] = threat;
+                }
+                
+                // Status
+                sensory[STATUS_START + 0] = game.satellites.length / 100;
+                sensory[STATUS_START + 1] = game.swarmPower / 100;
+                sensory[STATUS_START + 2] = game.asteroids.length / 10;
+                sensory[STATUS_START + 3] = this.deflections / 10;
+                
+                return sensory;
+            }
+            
+            spatialToBump(sens) {
+                const bump = new Float32Array(256);
+                const { SPATIAL_START, SPATIAL_LEN } = this.BANDS;
+                
+                for (let i = 0; i < SPATIAL_LEN; i++) {
+                    const a = Math.floor((i / SPATIAL_LEN) * 256);
+                    bump[a] += Math.max(0, sens[SPATIAL_START + i]);
+                }
+                
+                const sum = bump.reduce((x, y) => x + y, 0) || 1;
+                for (let i = 0; i < 256; i++) bump[i] /= sum;
+                
+                return bump;
+            }
+            
+            computeDopamine(reward) {
+                const delta = reward - this._prevR;
+                this._prevR = reward;
+                this.dopamine = Math.max(-1, Math.min(1, delta / 1000));
+                return this.dopamine;
+            }
+            
+            computeReward(game, target) {
+                let r = 0;
+                
+                r += (100 - this.earthHits) * 100;
+                r += game.swarmPower * 2;
+                r += this.deflections * 500;
+                
+                if (target) {
+                    const dist = target.position.length();
+                    r -= dist / 100;
+                }
+                
+                return r;
+            }
+            
+            addScore(points, reason) {
+                this.score += points;
+                if (this.score > this.highScore) {
+                    this.highScore = this.score;
+                    localStorage.setItem('swarm_high_score', this.highScore.toString());
+                }
+                console.log(`+${points} pts: ${reason}`);
+            }
+            
+            onDeflection(asteroid) {
+                this.deflections++;
+                this.addScore(1000, 'DEFLECTION');
+            }
+            
+            onEarthHit() {
+                this.earthHits++;
+                this.addScore(-500, 'IMPACT');
+            }
+        }
+        
+        // ============================================================================
+        // THREE.JS SPACE SCENE
+        // ============================================================================
+        
+        class SpaceScene {
+            constructor() {
+                this.scene = new THREE.Scene();
+                this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 1000000);
+                this.camera.position.set(0, 15000, 25000);
+                
+                this.renderer = new THREE.WebGLRenderer({ antialias: true });
+                this.renderer.setSize(window.innerWidth - 380, window.innerHeight);
+                this.renderer.setClearColor(0x000000);
+                document.getElementById('three-canvas').appendChild(this.renderer.domElement);
+                
+                this.controls = new THREE.OrbitControls(this.camera, this.renderer.domElement);
+                this.controls.enableDamping = true;
+                this.controls.dampingFactor = 0.05;
+                
+                this.setupLights();
+                this.setupSpace();
+                
+                this.earth = this.createEarth();
+                this.sun = this.createSun();
+                this.satellites = [];
+                this.asteroids = [];
+                this.beams = [];
+                this.swarmPower = 100;
+                
+                this.agent = new SwarmDefenseAgent();
+                
+                this.currentTarget = null;
+                this.focusQuality = 0;
+                this.convergence = 0;
+                
+                this.spawnInitialSatellites();
+                
+                window.addEventListener('resize', () => this.onResize());
+                this.setupInput();
+                
+                console.log('🌍 SWARM DEFENSE - ONLINE!');
+            }
+            
+            setupLights() {
+                const ambient = new THREE.AmbientLight(0x222222);
+                this.scene.add(ambient);
+                
+                this.sunLight = new THREE.DirectionalLight(0xffffff, 1.5);
+                this.sunLight.position.set(100000, 0, 0);
+                this.scene.add(this.sunLight);
+            }
+            
+            setupSpace() {
+                const starGeometry = new THREE.BufferGeometry();
+                const starVertices = [];
+                for (let i = 0; i < 10000; i++) {
+                    const x = (Math.random() - 0.5) * 200000;
+                    const y = (Math.random() - 0.5) * 200000;
+                    const z = (Math.random() - 0.5) * 200000;
+                    starVertices.push(x, y, z);
+                }
+                starGeometry.setAttribute('position', new THREE.Float32BufferAttribute(starVertices, 3));
+                const starMaterial = new THREE.PointsMaterial({ color: 0xffffff, size: 50 });
+                const stars = new THREE.Points(starGeometry, starMaterial);
+                this.scene.add(stars);
+            }
+            
+            createEarth() {
+                const geometry = new THREE.SphereGeometry(6371, 64, 64);
+                const material = new THREE.MeshPhongMaterial({ 
+                    color: 0x2233ff,
+                    emissive: 0x112244
+                });
+                const earth = new THREE.Mesh(geometry, material);
+                earth.position.set(0, 0, 0);
+                this.scene.add(earth);
+                
+                // Atmosphere
+                const atmoGeometry = new THREE.SphereGeometry(6500, 64, 64);
+                const atmoMaterial = new THREE.MeshBasicMaterial({
+                    color: 0x3366ff,
+                    transparent: true,
+                    opacity: 0.1,
+                    side: THREE.BackSide
+                });
+                const atmosphere = new THREE.Mesh(atmoGeometry, atmoMaterial);
+                earth.add(atmosphere);
+                
+                return earth;
+            }
+            
+            createSun() {
+                const geometry = new THREE.SphereGeometry(10000, 32, 32);
+                const material = new THREE.MeshBasicMaterial({ 
+                    color: 0xffff00,
+                    emissive: 0xffaa00
+                });
+                const sun = new THREE.Mesh(geometry, material);
+                sun.position.set(149597870, 0, 0); // 1 AU scaled down
+                this.scene.add(sun);
+                return sun;
+            }
+            
+            spawnInitialSatellites() {
+                for (let i = 0; i < 12; i++) {
+                    const theta = (i / 12) * Math.PI * 2;
+                    const phi = Math.acos(2 * Math.random() - 1);
+                    const r = 8000;
+                    
+                    const x = r * Math.sin(phi) * Math.cos(theta);
+                    const y = r * Math.sin(phi) * Math.sin(theta);
+                    const z = r * Math.cos(phi);
+                    
+                    this.spawnSatellite(x, y, z);
+                }
+            }
+            
+            spawnSatellite(x, y, z) {
+                const geometry = new THREE.BoxGeometry(50, 50, 50);
+                const material = new THREE.MeshPhongMaterial({ 
+                    color: 0x00ff00,
+                    emissive: 0x00aa00
+                });
+                const sat = new THREE.Mesh(geometry, material);
+                sat.position.set(x, y, z);
+                
+                // Solar panels
+                const panelGeom = new THREE.PlaneGeometry(200, 100);
+                const panelMat = new THREE.MeshPhongMaterial({ 
+                    color: 0x0066ff,
+                    emissive: 0x003388,
+                    side: THREE.DoubleSide
+                });
+                const panel1 = new THREE.Mesh(panelGeom, panelMat);
+                panel1.position.x = 125;
+                sat.add(panel1);
+                
+                const panel2 = new THREE.Mesh(panelGeom, panelMat);
+                panel2.position.x = -125;
+                sat.add(panel2);
+                
+                sat.userData = {
+                    velocity: new THREE.Vector3(0, 0, 0),
+                    power: 100,
+                    mirrorAngle: new THREE.Vector2(0, 0)
+                };
+                
+                this.scene.add(sat);
+                this.satellites.push(sat);
+            }
+            
+            spawnAsteroid() {
+                const radius = 50 + Math.random() * 200;
+                const geometry = new THREE.SphereGeometry(radius, 16, 16);
+                const material = new THREE.MeshPhongMaterial({ 
+                    color: 0x888888,
+                    emissive: 0x222222
+                });
+                const asteroid = new THREE.Mesh(geometry, material);
+                
+                // Spawn at distance
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.random() * Math.PI;
+                const dist = 40000 + Math.random() * 20000;
+                
+                asteroid.position.set(
+                    dist * Math.sin(phi) * Math.cos(theta),
+                    dist * Math.sin(phi) * Math.sin(theta),
+                    dist * Math.cos(phi)
+                );
+                
+                // Velocity toward Earth
+                const dir = new THREE.Vector3()
+                    .subVectors(this.earth.position, asteroid.position)
+                    .normalize()
+                    .multiplyScalar(50 + Math.random() * 100);
+                
+                asteroid.userData = {
+                    id: Math.random().toString(36),
+                    velocity: dir,
+                    radius: radius,
+                    mass: radius ** 3,
+                    ablationDV: new THREE.Vector3(0, 0, 0),
+                    beingEngaged: false
+                };
+                
+                this.scene.add(asteroid);
+                this.asteroids.push(asteroid);
+                
+                console.log(`🪨 Asteroid spawned: ${radius.toFixed(0)}m`);
+            }
+            
+            setupInput() {
+                document.addEventListener('keydown', (e) => {
+                    if (e.code === 'Space') {
+                        e.preventDefault();
+                        this.autoEngage();
+                    }
+                    if (e.code === 'KeyA') {
+                        const active = this.agent.toggle();
+                        document.getElementById('ai-status').innerHTML = active ? 
+                            'Mode: <span class="brain">AUTONOMOUS</span>' : 
+                            'Mode: <span class="brain">MANUAL</span>';
+                    }
+                    if (e.code === 'KeyT') {
+                        this.targetNearest();
+                    }
+                    if (e.code === 'KeyD') {
+                        this.deploySwarm();
+                    }
+                    if (e.code === 'KeyR') {
+                        this.reset();
+                    }
+                });
+            }
+            
+            autoEngage() {
+                if (this.asteroids.length === 0) return;
+                this.targetNearest();
+                console.log('AUTO-ENGAGE!');
+            }
+            
+            targetNearest() {
+                if (this.asteroids.length === 0) return;
+                
+                let nearest = null;
+                let minDist = Infinity;
+                
+                this.asteroids.forEach(ast => {
+                    const dist = ast.position.length();
+                    if (dist < minDist) {
+                        minDist = dist;
+                        nearest = ast;
+                    }
+                });
+                
+                this.currentTarget = nearest;
+                console.log(`🎯 Target locked: ${minDist.toFixed(0)}m`);
+            }
+            
+            deploySwarm() {
+                console.log('Deploying additional satellites...');
+                for (let i = 0; i < 4; i++) {
+                    const theta = Math.random() * Math.PI * 2;
+                    const phi = Math.acos(2 * Math.random() - 1);
+                    const r = 8000 + Math.random() * 2000;
+                    
+                    const x = r * Math.sin(phi) * Math.cos(theta);
+                    const y = r * Math.sin(phi) * Math.sin(theta);
+                    const z = r * Math.cos(phi);
+                    
+                    this.spawnSatellite(x, y, z);
+                }
+            }
+            
+            reset() {
+                // Clear asteroids
+                this.asteroids.forEach(ast => this.scene.remove(ast));
+                this.asteroids = [];
+                
+                // Reset score
+                this.agent.earthHits = 0;
+                this.agent.deflections = 0;
+                this.agent.wave = 1;
+                
+                console.log('🔄 Simulation reset');
+            }
+            
+            update() {
+                // Agent decision
+                if (this.agent.active) {
+                    const action = this.agent.decide(this);
+                    if (action) this.executeAction(action);
+                }
+                
+                // Update satellites
+                this.satellites.forEach(sat => {
+                    // Orbital motion (simplified)
+                    const r = sat.position.length();
+                    const v = Math.sqrt(398600 / r) * 0.01; // Simplified orbital velocity
+                    const tangent = new THREE.Vector3()
+                        .crossVectors(sat.position, new THREE.Vector3(0, 0, 1))
+                        .normalize()
+                        .multiplyScalar(v);
+                    
+                    sat.position.add(tangent);
+                    sat.lookAt(this.currentTarget ? this.currentTarget.position : this.earth.position);
+                });
+                
+                // Update asteroids
+                this.asteroids.forEach((ast, idx) => {
+                    ast.position.add(ast.userData.velocity);
+                    ast.position.add(ast.userData.ablationDV);
+                    ast.userData.ablationDV.multiplyScalar(0.99); // Decay
+                    
+                    ast.rotation.x += 0.01;
+                    ast.rotation.y += 0.02;
+                    
+                    // Check Earth collision
+                    const dist = ast.position.length();
+                    if (dist < 6500) {
+                        console.log('💥 EARTH IMPACT!');
+                        this.agent.onEarthHit();
+                        this.scene.remove(ast);
+                        this.asteroids.splice(idx, 1);
+                        
+                        document.getElementById('alert').style.display = 'block';
+                        setTimeout(() => {
+                            document.getElementById('alert').style.display = 'none';
+                        }, 2000);
+                    }
+                    
+                    // Remove if too far
+                    if (dist > 100000) {
+                        this.scene.remove(ast);
+                        this.asteroids.splice(idx, 1);
+                    }
+                });
+                
+                // Solar mirror physics
+                if (this.currentTarget) {
+                    this.updateMirrorFocus();
+                }
+                
+                // Spawn asteroids
+                if (Math.random() < 0.005 && this.asteroids.length < 10) {
+                    this.spawnAsteroid();
+                }
+                
+                this.updateUI();
+                this.controls.update();
+                this.renderer.render(this.scene, this.camera);
+            }
+            
+            updateMirrorFocus() {
+                if (!this.currentTarget || this.satellites.length === 0) return;
+                
+                // Calculate convergence
+                let totalFocus = 0;
+                this.satellites.forEach(sat => {
+                    const toTarget = new THREE.Vector3()
+                        .subVectors(this.currentTarget.position, sat.position)
+                        .normalize();
+                    
+                    const toSun = new THREE.Vector3()
+                        .subVectors(this.sun.position, sat.position)
+                        .normalize();
+                    
+                    // Mirror angle (simplified - should reflect sunlight toward target)
+                    const bisector = new THREE.Vector3().addVectors(toTarget, toSun).normalize();
+                    const focus = Math.max(0, toTarget.dot(toSun));
+                    totalFocus += focus;
+                });
+                
+                this.focusQuality = totalFocus / this.satellites.length;
+                this.convergence = Math.min(100, this.focusQuality * 100);
+                
+                // Apply ablation if converged
+                if (this.convergence > 50) {
+                    const intensity = this.convergence / 100;
+                    const mirrorArea = 100; // m² per satellite
+                    const solarFlux = 1361; // W/m² at Earth
+                    const totalPower = this.satellites.length * mirrorArea * solarFlux * intensity;
+                    
+                    // Ablation creates delta-V
+                    const ablationRate = totalPower / 1e9; // Simplified kg/s
+                    const ejectaVelocity = 1000; // m/s (typical for vaporized rock)
+                    const force = ablationRate * ejectaVelocity; // N
+                    const accel = force / this.currentTarget.userData.mass; // m/s²
+                    
+                    // Direction: away from mirror focus
+                    const direction = new THREE.Vector3()
+                        .subVectors(this.currentTarget.position, this.earth.position)
+                        .normalize();
+                    
+                    const dv = direction.multiplyScalar(accel * 0.1); // Scaled
+                    this.currentTarget.userData.ablationDV.add(dv);
+                    
+                    // Check deflection
+                    const deflection = this.currentTarget.userData.ablationDV.length();
+                    if (deflection > 50) {
+                        console.log(`✓ DEFLECTION: ${deflection.toFixed(0)} m/s`);
+                        this.agent.onDeflection(this.currentTarget);
+                        
+                        // Remove asteroid
+                        this.scene.remove(this.currentTarget);
+                        const idx = this.asteroids.indexOf(this.currentTarget);
+                        if (idx >= 0) this.asteroids.splice(idx, 1);
+                        this.currentTarget = null;
+                    }
+                }
+            }
+            
+            executeAction(action) {
+                if (action.type === 'ENGAGE') {
+                    this.currentTarget = action.target;
+                    // Set formation
+                } else if (action.type === 'MOVE_TO_INTERCEPT') {
+                    this.currentTarget = action.target;
+                    // Move satellites
+                } else if (action.type === 'DETECT') {
+                    this.currentTarget = action.target;
+                } else if (action.type === 'PATROL') {
+                    this.currentTarget = null;
+                }
+            }
+            
+            updateUI() {
+                // Brain
+                document.getElementById('cx-heading').textContent = Math.floor(this.agent.cx.getHeadingAngle()) + '°';
+                const valence = this.agent.mb.getValence();
+                document.getElementById('mb-valence').textContent = (valence.approach - valence.avoid).toFixed(2);
+                document.getElementById('dopamine').textContent = this.agent.dopamine.toFixed(2);
+                document.getElementById('al-active').textContent = this.agent.al.getActiveGlomeruli();
+                document.getElementById('ai-strategy').textContent = this.agent.currentStrategy;
+                document.getElementById('decisions').textContent = this.agent.decisions;
+                
+                // Mission
+                document.getElementById('score-display').textContent = this.agent.score;
+                document.getElementById('high-score-display').textContent = this.agent.highScore;
+                document.getElementById('deflections').textContent = this.agent.deflections;
+                document.getElementById('earth-hits').textContent = this.agent.earthHits;
+                document.getElementById('wave').textContent = this.agent.wave;
+                
+                // Swarm
+                document.getElementById('sats-active').textContent = this.satellites.length;
+                document.getElementById('power').textContent = Math.floor(this.swarmPower);
+                
+                // Mirrors
+                document.getElementById('focus-quality').textContent = this.focusQuality.toFixed(2);
+                document.getElementById('convergence').textContent = Math.floor(this.convergence);
+                
+                // Targets
+                document.getElementById('asteroid-count').textContent = this.asteroids.length;
+                if (this.currentTarget) {
+                    document.getElementById('locked-target').textContent = 'LOCKED';
+                    const dist = this.currentTarget.position.length();
+                    document.getElementById('target-distance').textContent = (dist / 1000).toFixed(1) + ' km';
+                    const vel = this.currentTarget.userData.velocity.length();
+                    document.getElementById('target-velocity').textContent = vel.toFixed(0) + ' m/s';
+                    
+                    const timeToImpact = dist / vel;
+                    document.getElementById('impact-eta').textContent = timeToImpact.toFixed(0) + 's';
+                } else {
+                    document.getElementById('locked-target').textContent = 'NONE';
+                    document.getElementById('target-distance').textContent = '--';
+                    document.getElementById('target-velocity').textContent = '--';
+                    document.getElementById('impact-eta').textContent = '--';
+                }
+                
+                // Memory
+                document.getElementById('mem-danger').textContent = this.agent.threatMap.size;
+                document.getElementById('mem-visited').textContent = this.agent.trajectoryMemory.size;
+                document.getElementById('mem-boundaries').textContent = this.agent.optimalPositions.size;
+            }
+            
+            onResize() {
+                this.camera.aspect = (window.innerWidth - 380) / window.innerHeight;
+                this.camera.updateProjectionMatrix();
+                this.renderer.setSize(window.innerWidth - 380, window.innerHeight);
+            }
+        }
+        
+        // ============================================================================
+        // INITIALIZATION
+        // ============================================================================
+        
+        const space = new SpaceScene();
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            space.update();
+        }
+        
+        animate();
+        
+        console.log('🛰️ SWARM DEFENSE v1.0 - READY!');
+        console.log('Controls: SPACE=Auto-engage, A=Toggle AI, T=Target, D=Deploy, R=Reset');
+    </script>
+</body>
+</html>
