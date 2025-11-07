@@ -1318,6 +1318,7 @@
                 this.basePowerPerSatelliteMW = 1.1;
                 this.powerMultiplier = 1;
                 this.timeScale = 1;
+                this.lastDeltaTime = DT;
                 this.maxSatelliteCapacity = 200;
                 this.targetSatelliteCount = 50;
                 this.safeDeflectionDistance = 9000; // km, radius target for safe miss
@@ -1788,6 +1789,7 @@
 
             update() {
                 const deltaTime = DT * this.timeScale;
+                this.lastDeltaTime = deltaTime;
                 this.physics.integrate(deltaTime);
                 this.modifiedEnergy = this.physics.computeModifiedEnergy();
 
@@ -1989,6 +1991,12 @@
             }
             
             updateMirrorFocus(deltaTime) {
+                const dt = Number.isFinite(deltaTime) && deltaTime > 0
+                    ? deltaTime
+                    : (Number.isFinite(this.lastDeltaTime) && this.lastDeltaTime > 0
+                        ? this.lastDeltaTime
+                        : DT * this.timeScale);
+
                 if (!this.currentTarget || !this.currentTarget.userData || this.asteroids.indexOf(this.currentTarget) === -1) {
                     this.currentTarget = null;
                     // Hide pooled beams and thrust vectors
@@ -2103,7 +2111,7 @@
                         .normalize();
                     
                     const thrustBoost = 100;
-                    const deltaV = finalThrustDir.clone().multiplyScalar((accel * deltaTime * thrustBoost) / 1000);
+                    const deltaV = finalThrustDir.clone().multiplyScalar((accel * dt * thrustBoost) / 1000);
                     this.currentTarget.userData.velocity.add(deltaV);
 
                     // Apply TORQUE from off-center thrust
@@ -2118,7 +2126,7 @@
                     
                     const torqueAxis = torque.normalize();
                     this.currentTarget.userData.angularVelocity.add(
-                        torqueAxis.multiplyScalar(angularAccel * deltaTime)
+                        torqueAxis.multiplyScalar(angularAccel * dt)
                     );
                     
                     // Clamp angular velocity to prevent visual chaos
@@ -2142,7 +2150,7 @@
                     this.thrustForce = F_thrust;
                     
                     // Log physics periodically
-                    if (Math.random() < Math.min(1, deltaTime)) {
+                    if (Math.random() < Math.min(1, dt)) {
                         const spinRate = this.currentTarget.userData.angularVelocity.length() * 180 / Math.PI;
                         console.log(`🔥 P=${(P_laser/1e6).toFixed(2)}MW | Ablation=${m_dot.toFixed(4)}kg/s | Thrust=${F_thrust.toFixed(2)}N | ΔV=${totalDeltaV.toFixed(2)}m/s | Spin=${spinRate.toFixed(1)}°/s`);
                     }
