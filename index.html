@@ -86,6 +86,13 @@
             font-weight: bold;
             text-shadow: 0 0 5px #00ff00;
         }
+        #compute-status {
+            color: #00ff00;
+        }
+        .cpu-fallback {
+            color: #ff9900 !important;
+            text-shadow: none;
+        }
         .swarm {
             color: #ffd700;
             font-weight: bold;
@@ -126,7 +133,8 @@
             <h2 style="color: #ff6b6b; margin: 0 0 8px 0; font-size: 15px;">SWARM DEFENSE v2.1</h2>
             <div style="color: #888; font-size: 9px; margin-bottom: 10px;">
                 <span class="brain" id="header-sat-count">50 SATS</span> |
-                <span class="gpu" id="gpu-status">55 MW</span> | 
+                <span class="gpu" id="compute-status">GPU: READY</span> |
+                <span class="gpu" id="gpu-status">55 MW</span> |
                 <span class="quantum">2 AU DETECT</span>
             </div>
             
@@ -212,7 +220,12 @@
                 <div class="key">Locked: <span id="locked-target" class="stat">NONE</span></div>
                 <div class="key">Distance: <span id="target-distance" class="stat">--</span></div>
                 <div class="key">Velocity: <span id="target-velocity" class="stat">--</span></div>
-                <div class="key">Δv Required: <span id="delta-v" class="stat">--</span></div>
+                <div class="key">Δv Required:
+                    <span id="delta-v" class="stat">--</span>
+                    <div style="height:4px;background:#022;margin-top:3px;">
+                        <div id="dv-bar" style="height:4px;width:0;background:#0f0;"></div>
+                    </div>
+                </div>
                 <div class="key">Impact ETA: <span id="impact-eta" class="danger">--</span></div>
             </div>
 
@@ -251,6 +264,14 @@
         const EARTH_MASS = 5.972e24; // kg
         const SUN_MASS = 5e23; // kg (scaled to keep system stable)
         const SATELLITE_MASS = 1200; // kg
+
+        const TMP = {
+            v1: new THREE.Vector3(),
+            v2: new THREE.Vector3(),
+            v3: new THREE.Vector3(),
+            r: new THREE.Vector3(),
+            t: new THREE.Vector3()
+        };
 
         function formatMissionTime(seconds) {
             const totalSeconds = Math.max(0, Math.floor(seconds || 0));
@@ -293,7 +314,8 @@
             const massJ = bj.userData.mass || 0;
             if (!massI || !massJ) return new THREE.Vector3();
 
-            const r = new THREE.Vector3().subVectors(bj.position, bi.position);
+            const r = TMP.r;
+            r.subVectors(bj.position, bi.position);
             const distSq = Math.max(r.lengthSq(), 1e-6);
             const dist = Math.sqrt(distSq);
             const inv = 1 / dist;
@@ -304,9 +326,9 @@
             const phiBeta = Math.exp(beta * sigmaI);
 
             const massProduct = G * massI * massJ;
-            const newton = r.clone().multiplyScalar(massProduct * phiBeta * inv3);
+            const newton = TMP.v1.copy(r).multiplyScalar(massProduct * phiBeta * inv3);
             const coeff = -beta * massProduct * phiBeta * inv;
-            const weyl = gradSigma.clone().multiplyScalar(coeff);
+            const weyl = gradSigma.multiplyScalar(coeff);
 
             return newton.add(weyl);
         }
@@ -557,7 +579,9 @@
                 
                 // Create VAO for WebGL2 compatibility
                 this.vao = gl.createVertexArray();
-                
+                this.posBuffer = gl.createBuffer();
+                this._quadInit = false;
+
                 return program;
             }
             
@@ -615,15 +639,16 @@
                 gl.uniform1i(gl.getUniformLocation(this.program, 'stateTexture'), 0);
 
                 gl.bindVertexArray(this.vao);
-                const posBuffer = gl.createBuffer();
-                gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
-                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
-                    -1, -1,  1, -1,  -1, 1,  1, 1
-                ]), gl.STATIC_DRAW);
-
-                const posLoc = gl.getAttribLocation(this.program, 'position');
-                gl.enableVertexAttribArray(posLoc);
-                gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+                gl.bindBuffer(gl.ARRAY_BUFFER, this.posBuffer);
+                if (!this._quadInit) {
+                    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+                        -1, -1,  1, -1,  -1, 1,  1, 1
+                    ]), gl.STATIC_DRAW);
+                    const posLoc = gl.getAttribLocation(this.program, 'position');
+                    gl.enableVertexAttribArray(posLoc);
+                    gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+                    this._quadInit = true;
+                }
 
                 gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
@@ -1004,7 +1029,12 @@
                 this.comboStreak = 0;
                 
                 console.log('🛰️ SWARM DEFENSE initialized!', this.brain.useCPU ? 'CPU' : 'GPU');
-                document.getElementById('gpu-status').textContent = this.brain.useCPU ? 'CPU: FALLBACK' : 'GPU: READY';
+                const computeStatus = document.getElementById('compute-status');
+                if (computeStatus) {
+                    const fallback = this.brain.useCPU;
+                    computeStatus.textContent = fallback ? 'CPU: FALLBACK' : 'GPU: READY';
+                    computeStatus.classList.toggle('cpu-fallback', fallback);
+                }
             }
             
             toggle() {
@@ -1054,7 +1084,7 @@
                 
                 this.updateMemory(game);
                 
-                if (this.tick % 50 === 0) {
+                if ((this.tick % 120) === 0) {
                     console.log(`🧠 SWARM: Threats=${this.threatMap.size}, Strategy=${this.currentStrategy}`);
                 }
                 
@@ -1452,7 +1482,11 @@
                 this.camera = new THREE.PerspectiveCamera(60, (window.innerWidth - 380) / window.innerHeight, 1, 2000000);
                 this.camera.position.set(0, 80000, 150000); // Pulled back for 2 AU view
                 
-                this.renderer = new THREE.WebGLRenderer({ antialias: true });
+                this.renderer = new THREE.WebGLRenderer({
+                    antialias: true,
+                    logarithmicDepthBuffer: true,
+                    powerPreference: 'high-performance'
+                });
                 this.renderer.setSize(window.innerWidth - 380, window.innerHeight);
                 this.renderer.setClearColor(0x000000);
                 document.getElementById('three-canvas').appendChild(this.renderer.domElement);
@@ -1501,6 +1535,7 @@
                     // Trajectory pool
                     const trajGeom = new THREE.BufferGeometry();
                     trajGeom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(303), 3)); // 101 points
+                    trajGeom.setDrawRange(0, 0);
                     const trajMat = new THREE.LineBasicMaterial({ transparent: true, opacity: 0.5 });
                     const traj = new THREE.Line(trajGeom, trajMat);
                     traj.visible = false;
@@ -1510,6 +1545,7 @@
 
                 this.beamPoolIndex = 0;
                 this.trajectoryPoolIndex = 0;
+                this.asteroidCounter = 0;
 
                 this.elapsedTime = 0;
                 this.spawnTimer = 0;
@@ -1537,6 +1573,33 @@
                 this.setupInput();
                 
                 console.log('🌍 SWARM DEFENSE - ONLINE!');
+            }
+
+            clearThrustVectors() {
+                this.thrustVectors.forEach(obj => {
+                    if (obj.geometry && typeof obj.geometry.dispose === 'function') {
+                        obj.geometry.dispose();
+                    }
+                    if (obj.material) {
+                        if (Array.isArray(obj.material)) {
+                            obj.material.forEach(mat => mat && typeof mat.dispose === 'function' && mat.dispose());
+                        } else if (typeof obj.material.dispose === 'function') {
+                            obj.material.dispose();
+                        }
+                    }
+                    this.scene.remove(obj);
+                });
+                this.thrustVectors.length = 0;
+            }
+
+            generateAsteroidId() {
+                this.asteroidCounter = (this.asteroidCounter + 1) % Number.MAX_SAFE_INTEGER;
+                if (typeof window !== 'undefined' && window.crypto && window.crypto.getRandomValues) {
+                    const rand = new Uint32Array(1);
+                    window.crypto.getRandomValues(rand);
+                    return `ast-${rand[0].toString(16)}-${this.asteroidCounter.toString(16)}`;
+                }
+                return `ast-${Date.now().toString(36)}-${this.asteroidCounter.toString(36)}`;
             }
             
             setupLights() {
@@ -1781,6 +1844,12 @@
                 }
                 const relativePosition = asteroid.position.clone();
                 const relativeVelocity = asteroid.userData.velocity.clone();
+                const radialDirection = relativePosition.clone().normalize();
+                const closingSpeed = -relativeVelocity.dot(radialDirection); // km/s toward Earth
+                if (closingSpeed <= 0) {
+                    return 0;
+                }
+
                 const speedSq = relativeVelocity.lengthSq();
                 if (speedSq < 1e-6) {
                     return 0;
@@ -1791,6 +1860,9 @@
                     return 0;
                 }
 
+                const closingTime = relativePosition.length() / Math.max(1e-6, closingSpeed);
+                const timeWindow = Math.max(1, Math.min(timeToClosest, closingTime));
+
                 const closestApproach = relativePosition.clone()
                     .add(relativeVelocity.clone().multiplyScalar(timeToClosest))
                     .length();
@@ -1800,7 +1872,7 @@
                 }
 
                 const requiredOffset = this.safeDeflectionDistance - closestApproach;
-                const requiredDeltaV = requiredOffset / Math.max(timeToClosest, 1); // km/s
+                const requiredDeltaV = requiredOffset / timeWindow; // km/s
                 return Math.max(0, requiredDeltaV * 1000); // convert to m/s
             }
             
@@ -1836,7 +1908,7 @@
                 const mass = baseMass * massScale;
 
                 asteroid.userData = {
-                    id: Math.random().toString(36),
+                    id: this.generateAsteroidId(),
                     velocity: dir.clone(),
                     originalVelocity: dir.clone(), // TRACK ORIGINAL
                     originalPosition: asteroid.position.clone(), // TRACK ORIGINAL
@@ -1980,6 +2052,9 @@
                 this.lastDeltaTime = deltaTime;
                 this.physics.integrate(deltaTime);
                 this.modifiedEnergy = this.physics.computeModifiedEnergy();
+                if (this.sunLight && this.sun) {
+                    this.sunLight.position.copy(this.sun.position);
+                }
 
                 this.elapsedTime += deltaTime;
 
@@ -2071,14 +2146,19 @@
 
                             if (poolIdx < this.trajectoryPool.length) {
                                 const traj = this.trajectoryPool[poolIdx++];
-                                const positions = new Float32Array(origPoints.length * 3);
-                                origPoints.forEach((p, i) => {
-                                    positions[i*3] = p.x;
-                                    positions[i*3+1] = p.y;
-                                    positions[i*3+2] = p.z;
-                                });
-                                traj.geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-                                traj.geometry.attributes.position.needsUpdate = true;
+                                const attr = traj.geometry.attributes.position;
+                                const arr = attr.array;
+                                const maxPoints = arr.length / 3;
+                                const len = Math.min(origPoints.length, maxPoints);
+                                let write = 0;
+                                for (let i = 0; i < len; i++) {
+                                    const p = origPoints[i];
+                                    arr[write++] = p.x;
+                                    arr[write++] = p.y;
+                                    arr[write++] = p.z;
+                                }
+                                traj.geometry.setDrawRange(0, len);
+                                attr.needsUpdate = true;
                                 traj.material.color.setHex(0xff0000);
                                 traj.visible = true;
                             }
@@ -2098,14 +2178,19 @@
 
                         if (poolIdx < this.trajectoryPool.length) {
                             const traj = this.trajectoryPool[poolIdx++];
-                            const positions = new Float32Array(currentPoints.length * 3);
-                            currentPoints.forEach((p, i) => {
-                                positions[i*3] = p.x;
-                                positions[i*3+1] = p.y;
-                                positions[i*3+2] = p.z;
-                            });
-                            traj.geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-                            traj.geometry.attributes.position.needsUpdate = true;
+                            const attr = traj.geometry.attributes.position;
+                            const arr = attr.array;
+                            const maxPoints = arr.length / 3;
+                            const len = Math.min(currentPoints.length, maxPoints);
+                            let write = 0;
+                            for (let i = 0; i < len; i++) {
+                                const p = currentPoints[i];
+                                arr[write++] = p.x;
+                                arr[write++] = p.y;
+                                arr[write++] = p.z;
+                            }
+                            traj.geometry.setDrawRange(0, len);
+                            attr.needsUpdate = true;
                             const willHit = futurePos.length() < 6500;
                             traj.material.color.setHex(willHit ? 0xff8800 : 0x00ff00);
                             traj.visible = true;
@@ -2162,12 +2247,14 @@
                 const spawnInterval = Math.max(2.5, this.spawnInterval - (wave - 1) * 0.25);
                 const maxAsteroids = Math.min(12, this.maxConcurrentAsteroids + Math.floor((wave - 1) * 0.75));
                 this.spawnTimer += deltaTime;
+                let spawnedThisFrame = 0;
                 while (this.spawnTimer >= spawnInterval) {
                     if (this.asteroids.length < maxAsteroids) {
                         this.spawnAsteroid();
+                        spawnedThisFrame++;
                     }
                     this.spawnTimer -= spawnInterval;
-                    if (this.asteroids.length >= maxAsteroids) {
+                    if (this.asteroids.length >= maxAsteroids || spawnedThisFrame >= 1) {
                         break;
                     }
                 }
@@ -2188,8 +2275,7 @@
                     this.currentTarget = null;
                     // Hide pooled beams and thrust vectors
                     this.beamPool.forEach(beam => beam.visible = false);
-                    this.thrustVectors.forEach(vec => this.scene.remove(vec));
-                    this.thrustVectors = [];
+                    this.clearThrustVectors();
                     this.focusQuality = 0;
                     this.convergence = 0;
                     this.intensity = 0;
@@ -2200,33 +2286,27 @@
                 if (this.satellites.length === 0) return;
                 
                 // MERGE: Calculate focal point ONCE for both beams and physics
-                const toSun = new THREE.Vector3()
-                    .subVectors(this.sun.position, this.currentTarget.position)
-                    .normalize();
                 const radius = this.currentTarget.userData.radius;
-                const focalOffset = toSun.clone().multiplyScalar(radius * 0.6);
+                const toSun = TMP.v1.copy(this.sun.position).sub(this.currentTarget.position).normalize();
+                const focalOffset = TMP.v2.copy(toSun).multiplyScalar(radius * 0.6);
                 const focalPoint = this.currentTarget.position.clone().add(focalOffset);
-                
+
                 // Calculate convergence and draw beams using pooling
                 let totalFocus = 0;
                 let beamIdx = 0;
-                
+
                 this.beamPool.forEach(beam => beam.visible = false); // Hide all first
-                
-                this.satellites.forEach(sat => {
-                    const toTarget = new THREE.Vector3()
-                        .subVectors(focalPoint, sat.position)
-                        .normalize();
-                    
-                    const toSunFromSat = new THREE.Vector3()
-                        .subVectors(this.sun.position, sat.position)
-                        .normalize();
-                    
+
+                for (let i = 0; i < this.satellites.length; i++) {
+                    const sat = this.satellites[i];
+                    const toTarget = TMP.v1.copy(focalPoint).sub(sat.position).normalize();
+                    const toSunFromSat = TMP.v3.copy(this.sun.position).sub(sat.position).normalize();
+
                     // Check if sun is visible from satellite
                     const sunAngle = toTarget.angleTo(toSunFromSat);
                     const focus = Math.max(0, 1.0 - sunAngle / Math.PI);
                     totalFocus += focus;
-                    
+
                     // Draw beam if focusing - using pooled objects
                     if (focus > 0.3 && beamIdx < this.beamPool.length) {
                         const beam = this.beamPool[beamIdx++];
@@ -2241,26 +2321,36 @@
                         beam.material.opacity = 0.3 + focus * 0.3;
                         beam.visible = true;
                     }
-                });
-                
+                }
+
                 this.focusQuality = totalFocus / this.satellites.length;
                 this.convergence = Math.min(100, this.focusQuality * 150);
-                
-                // FIX INTENSITY: Use real P_laser calculation
+
+                const AU = 150000; // game units
+                const dSun = this.sun.position.distanceTo(this.currentTarget.position);
+                const solarFluxLocal = 1361 * Math.pow(AU / Math.max(1, dSun), 2); // W/m²
+
+                const sunDir = this.currentTarget.position.clone().sub(this.sun.position).normalize();
+                const earthVec = this.earth.position.clone().sub(this.sun.position);
+                const proj = earthVec.dot(sunDir);
+                const closest = sunDir.clone().multiplyScalar(proj);
+                const off = earthVec.clone().sub(closest).length();
+                const earthShadow = (proj > 0) && (off < 6500);
+                const shadowFactor = earthShadow ? 0.15 : 1.0;
+
                 const mirrorArea = 1000; // m² per satellite
-                const solarFlux = 1361; // W/m² at 1 AU
                 const reflectivity = 0.95; // Gold coating
                 const concentrationEfficiency = 0.85; // Parabolic focus
                 const convergenceFactor = this.convergence / 100;
-                
-                const P_laser = this.satellites.length * mirrorArea * solarFlux *
+
+                const P_laser = shadowFactor * this.satellites.length * mirrorArea * solarFluxLocal *
                                reflectivity * concentrationEfficiency * convergenceFactor *
                                this.powerMultiplier;
-                
+
                 this.intensity = P_laser; // Store in watts
-                
+
                 // REAL CARBONACEOUS CHONDRITE ABLATION PHYSICS
-                if (this.convergence > 30) {
+                if (this.convergence > 30 && P_laser > 0) {
                     // Material properties
                     const H_VAP = 4e6;   // J/kg (vaporization enthalpy)
                     const V_EXH = 1000;  // m/s (ejecta velocity)
@@ -2283,23 +2373,31 @@
 
                     // Perpendicular component for optimal deflection
                     const velocity = this.currentTarget.userData.velocity.clone().normalize();
-                    const toEarth = new THREE.Vector3()
-                        .subVectors(this.earth.position, this.currentTarget.position)
-                        .normalize();
-                    
-                    const lateralBias = new THREE.Vector3()
-                        .crossVectors(velocity, toEarth)
-                        .normalize();
-                    
+                    const toEarth = TMP.t.copy(this.earth.position).sub(this.currentTarget.position).normalize();
+
+                    const lateralBias = velocity.clone().cross(toEarth).normalize();
+
                     if (lateralBias.length() < 0.1) {
                         lateralBias.crossVectors(velocity, new THREE.Vector3(0, 1, 0)).normalize();
                     }
-                    
+
                     // Final thrust: 70% from focal normal + 30% lateral
-                    const finalThrustDir = thrustDir.clone().multiplyScalar(0.7)
-                        .add(lateralBias.clone().multiplyScalar(0.3))
+                    const finalThrustDir = thrustDir.multiplyScalar(0.7)
+                        .add(lateralBias.multiplyScalar(0.3))
                         .normalize();
-                    
+
+                    if (!this.currentTarget.userData.angularVelocity) {
+                        this.currentTarget.userData.angularVelocity = new THREE.Vector3(0, 0, 0);
+                    }
+
+                    const angVel = this.currentTarget.userData.angularVelocity;
+                    const MAX_AV = 0.5; // rad/s
+                    const angVelLen = angVel.length();
+                    if (angVelLen > MAX_AV * 0.95) {
+                        const taper = 1 - (angVelLen / MAX_AV);
+                        finalThrustDir.multiplyScalar(Math.max(0.2, taper));
+                    }
+
                     const deltaV = finalThrustDir.clone().multiplyScalar((accel * effectiveSeconds) / 1000);
                     this.currentTarget.userData.velocity.add(deltaV);
 
@@ -2308,28 +2406,20 @@
                     const torque = new THREE.Vector3().crossVectors(leverArm, finalThrustDir.clone().multiplyScalar(F_thrust));
                     const momentOfInertia = (2/5) * M_asteroid * radius * radius;
                     const angularAccel = torque.length() / momentOfInertia;
-                    
-                    if (!this.currentTarget.userData.angularVelocity) {
-                        this.currentTarget.userData.angularVelocity = new THREE.Vector3(0, 0, 0);
-                    }
-                    
+
                     const torqueAxis = torque.normalize();
-                    this.currentTarget.userData.angularVelocity.add(
-                        torqueAxis.multiplyScalar(angularAccel * effectiveSeconds)
-                    );
-                    
+                    angVel.add(torqueAxis.multiplyScalar(angularAccel * effectiveSeconds));
+
                     // Clamp angular velocity to prevent visual chaos
-                    const MAX_AV = 0.5; // rad/s
-                    if (this.currentTarget.userData.angularVelocity.length() > MAX_AV) {
-                        this.currentTarget.userData.angularVelocity.setLength(MAX_AV);
+                    if (angVel.length() > MAX_AV) {
+                        angVel.setLength(MAX_AV);
                     }
-                    
+
                     // Apply rotation
-                    const angVel = this.currentTarget.userData.angularVelocity;
                     this.currentTarget.rotation.x += angVel.x;
                     this.currentTarget.rotation.y += angVel.y;
                     this.currentTarget.rotation.z += angVel.z;
-                    
+
                     // Track cumulative ΔV
                     this.currentTarget.userData.ablationDV.add(deltaV);
                     const totalDeltaV = this.currentTarget.userData.ablationDV.length() * 1000;
@@ -2348,23 +2438,22 @@
                     // Store metrics
                     this.ablationRate = m_dot * this.ablationTimeWarp;
                     this.thrustForce = F_thrust;
-                    
+
                     // Log physics periodically
                     if (Math.random() < Math.min(1, dt)) {
-                        const spinRate = this.currentTarget.userData.angularVelocity.length() * 180 / Math.PI;
+                        const spinRate = angVel.length() * 180 / Math.PI;
                         console.log(`🔥 P=${(P_laser/1e6).toFixed(2)}MW | Ablation=${m_dot.toFixed(4)}kg/s | Thrust=${F_thrust.toFixed(2)}N | ΔV=${totalDeltaV.toFixed(2)}m/s | Spin=${spinRate.toFixed(1)}°/s`);
                     }
-                    
+
                     // Draw thrust vector FROM FOCAL POINT (clear old, create new)
-                    this.thrustVectors.forEach(vec => this.scene.remove(vec));
-                    this.thrustVectors = [];
-                    
+                    this.clearThrustVectors();
+
                     const thrustVizDir = finalThrustDir.clone().multiplyScalar(5000);
                     const arrowGeometry = new THREE.BufferGeometry();
                     const arrowPositions = new Float32Array([
                         focalPoint.x, focalPoint.y, focalPoint.z,
-                        focalPoint.x + thrustVizDir.x, 
-                        focalPoint.y + thrustVizDir.y, 
+                        focalPoint.x + thrustVizDir.x,
+                        focalPoint.y + thrustVizDir.y,
                         focalPoint.z + thrustVizDir.z
                     ]);
                     arrowGeometry.setAttribute('position', new THREE.BufferAttribute(arrowPositions, 3));
@@ -2372,10 +2461,10 @@
                     const thrustArrow = new THREE.Line(arrowGeometry, arrowMaterial);
                     this.scene.add(thrustArrow);
                     this.thrustVectors.push(thrustArrow);
-                    
+
                     // Draw focal point indicator
                     const focalGeometry = new THREE.SphereGeometry(radius * 0.15, 8, 8);
-                    const focalMaterial = new THREE.MeshBasicMaterial({ 
+                    const focalMaterial = new THREE.MeshBasicMaterial({
                         color: 0xffff00,
                         transparent: true,
                         opacity: 0.8
@@ -2384,7 +2473,7 @@
                     focalIndicator.position.copy(focalPoint);
                     this.scene.add(focalIndicator);
                     this.thrustVectors.push(focalIndicator);
-                    
+
                     // Visual feedback - glow
                     if (this.currentTarget.material) {
                         const intensity = this.convergence / 100;
@@ -2393,20 +2482,20 @@
                             this.currentTarget.material.emissiveIntensity = Math.min(1.0, intensity * 2);
                         }
                     }
-                    
+
                     // Check deflection success
                     const distToEarth = this.currentTarget.position.length();
                     const velTowardEarth = this.currentTarget.userData.velocity.dot(
-                        new THREE.Vector3().subVectors(this.earth.position, this.currentTarget.position).normalize()
+                        TMP.v1.copy(this.earth.position).sub(this.currentTarget.position).normalize()
                     ) * 1000;
                     const closingSpeed = Math.max(0, velTowardEarth / 1000);
                     const etaSeconds = closingSpeed > 0 ? distToEarth / closingSpeed : Infinity;
-                    
+
                     // Progress indicator
                     if (totalDeltaV > 5 && totalDeltaV < 15 && Math.random() < 0.05) {
                         console.log(`⚡ Deflection progress: ${totalDeltaV.toFixed(1)}/15 m/s (${(totalDeltaV/15*100).toFixed(0)}%)`);
                     }
-                    
+
                     const requiredDeltaV = this.calculateRequiredDeltaV(this.currentTarget);
                     this.currentTarget.userData.requiredDeltaV = requiredDeltaV;
                     const deflectionSuccess = (requiredDeltaV > 0 ? totalDeltaV >= requiredDeltaV : totalDeltaV > 5) || velTowardEarth < 10;
@@ -2449,8 +2538,7 @@
                     this.ablationRate = 0;
                     this.thrustForce = 0;
                     
-                    this.thrustVectors.forEach(vec => this.scene.remove(vec));
-                    this.thrustVectors = [];
+                    this.clearThrustVectors();
                 }
             }
             
@@ -2479,6 +2567,13 @@
             }
             
             updateUI() {
+                const computeStatus = document.getElementById('compute-status');
+                if (computeStatus && this.agent && this.agent.brain) {
+                    const fallback = this.agent.brain.useCPU;
+                    computeStatus.textContent = fallback ? 'CPU: FALLBACK' : 'GPU: READY';
+                    computeStatus.classList.toggle('cpu-fallback', fallback);
+                }
+
                 // Brain
                 document.getElementById('cx-heading').textContent = Math.floor(this.agent.cx.getHeadingAngle()) + '°';
                 const valence = this.agent.mb.getValence();
@@ -2579,9 +2674,10 @@
                 document.getElementById('convergence').textContent = Math.floor(this.convergence);
                 const intensityMW = this.intensity / 1e6; // Convert W to MW
                 document.getElementById('intensity').textContent = intensityMW.toFixed(2);
-                const ablationRateDisplay = this.ablationRate >= 1000
-                    ? this.ablationRate.toLocaleString(undefined, { maximumFractionDigits: 0 })
-                    : this.ablationRate.toFixed(3);
+                const cappedAblation = Math.min(999999, Math.max(0, this.ablationRate));
+                const ablationRateDisplay = cappedAblation >= 1000
+                    ? cappedAblation.toLocaleString(undefined, { maximumFractionDigits: 0 })
+                    : cappedAblation.toFixed(3);
                 document.getElementById('ablation-rate').textContent = ablationRateDisplay;
                 
                 // Targets
@@ -2597,6 +2693,12 @@
                     const appliedDV = this.currentTarget.userData.ablationDV.length() * 1000;
                     const requiredDV = this.calculateRequiredDeltaV(this.currentTarget);
                     document.getElementById('delta-v').textContent = `${appliedDV.toFixed(1)} / ${requiredDV.toFixed(1)} m/s`;
+                    const dvBar = document.getElementById('dv-bar');
+                    if (dvBar) {
+                        const req = Math.max(1, requiredDV || 0);
+                        const pct = req > 0 ? Math.min(100, (appliedDV / req) * 100) : 0;
+                        dvBar.style.width = `${pct}%`;
+                    }
 
                     const timeToImpact = vel > 0 ? dist / vel : 999;
                     const timeHours = timeToImpact / 3600; // Convert to hours
@@ -2610,6 +2712,10 @@
                     document.getElementById('target-distance').textContent = '--';
                     document.getElementById('target-velocity').textContent = '--';
                     document.getElementById('delta-v').textContent = '--';
+                    const dvBar = document.getElementById('dv-bar');
+                    if (dvBar) {
+                        dvBar.style.width = '0%';
+                    }
                     document.getElementById('impact-eta').textContent = '--';
                 }
                 
@@ -2626,7 +2732,7 @@
                     (this.currentTarget.userData.ablationDV.length() * 1000).toFixed(1) : '0.0';
                 document.getElementById('ejecta-dv').textContent = ejectaDV;
 
-                const energyEJ = this.modifiedEnergy ? this.modifiedEnergy / 1e18 : 0;
+                const energyEJ = this.modifiedEnergy ? this.modifiedEnergy * 1e-12 : 0;
                 document.getElementById('modified-energy').textContent = energyEJ.toFixed(3);
 
                 const spallRate = this.intensity > 0.1 ? (this.intensity * 5).toFixed(1) : '0.0';
@@ -2646,42 +2752,94 @@
 
         const space = new SpaceScene();
 
+        let pendingSatUpdate = false;
+        let satUpdateValue = space.targetSatelliteCount;
+        const queueSatUpdate = (value) => {
+            satUpdateValue = value;
+            if (!pendingSatUpdate) {
+                pendingSatUpdate = true;
+                requestAnimationFrame(() => {
+                    pendingSatUpdate = false;
+                    space.setTargetSatelliteCount(satUpdateValue);
+                });
+            }
+        };
+
         const satelliteSlider = document.getElementById('satellite-slider');
         if (satelliteSlider) {
             satelliteSlider.addEventListener('input', (event) => {
                 const value = parseInt(event.target.value, 10);
                 if (!Number.isNaN(value)) {
-                    space.setTargetSatelliteCount(value);
+                    queueSatUpdate(value);
                 }
             });
         }
+
+        let pendingPowerUpdate = false;
+        let powerUpdateValue = space.powerMultiplier;
+        const queuePowerUpdate = (value) => {
+            powerUpdateValue = value;
+            if (!pendingPowerUpdate) {
+                pendingPowerUpdate = true;
+                requestAnimationFrame(() => {
+                    pendingPowerUpdate = false;
+                    space.setPowerMultiplier(powerUpdateValue);
+                });
+            }
+        };
 
         const powerSlider = document.getElementById('power-slider');
         if (powerSlider) {
             powerSlider.addEventListener('input', (event) => {
                 const value = parseFloat(event.target.value);
                 if (!Number.isNaN(value)) {
-                    space.setPowerMultiplier(value);
+                    queuePowerUpdate(value);
                 }
             });
         }
+
+        let pendingTimeUpdate = false;
+        let timeUpdateValue = space.timeScale;
+        const queueTimeUpdate = (value) => {
+            timeUpdateValue = value;
+            if (!pendingTimeUpdate) {
+                pendingTimeUpdate = true;
+                requestAnimationFrame(() => {
+                    pendingTimeUpdate = false;
+                    space.setTimeScale(timeUpdateValue);
+                });
+            }
+        };
 
         const timeSlider = document.getElementById('time-slider');
         if (timeSlider) {
             timeSlider.addEventListener('input', (event) => {
                 const value = parseFloat(event.target.value);
                 if (!Number.isNaN(value)) {
-                    space.setTimeScale(value);
+                    queueTimeUpdate(value);
                 }
             });
         }
+
+        let pendingMassUpdate = false;
+        let massUpdateValue = space.asteroidMassScale;
+        const queueMassUpdate = (value) => {
+            massUpdateValue = value;
+            if (!pendingMassUpdate) {
+                pendingMassUpdate = true;
+                requestAnimationFrame(() => {
+                    pendingMassUpdate = false;
+                    space.setAsteroidMassScale(massUpdateValue);
+                });
+            }
+        };
 
         const massSlider = document.getElementById('mass-slider');
         if (massSlider) {
             massSlider.addEventListener('input', (event) => {
                 const value = parseFloat(event.target.value);
                 if (!Number.isNaN(value)) {
-                    space.setAsteroidMassScale(value);
+                    queueMassUpdate(value);
                 }
             });
         }
