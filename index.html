@@ -189,6 +189,7 @@
                 <div class="key">Photon Flux: <span id="photon-flux" class="quantum">1.0</span></div>
                 <div class="key">Ejecta ΔV: <span id="ejecta-dv" class="quantum">0.0</span></div>
                 <div class="key">Spall Rate: <span id="spall-rate" class="quantum">0.0</span></div>
+                <div class="key">Modified Energy: <span id="modified-energy" class="quantum">0.0</span> EJ</div>
             </div>
 
             <div class="section">
@@ -204,6 +205,173 @@
     </div>
     
     <script>
+        const DT = 1 / 60; // seconds per simulation step
+        const G = 6.67430e-20; // km^3/(kg·s^2)
+        const BASE_BETA = 0.3; // coupling strength for Weyl twist
+        const EARTH_MASS = 5.972e24; // kg
+        const SUN_MASS = 5e23; // kg (scaled to keep system stable)
+        const SATELLITE_MASS = 1200; // kg
+
+        class ScaleField {
+            constructor() {
+                this.strength = 0.2;
+                this.lengthScale = 60000; // km
+            }
+
+            sigma(position, t) {
+                const r = position.length();
+                return this.strength * Math.exp(-r / this.lengthScale) * Math.cos(0.0002 * t);
+            }
+
+            gradSigma(position, t) {
+                const r = position.length();
+                if (r < 1e-6) return new THREE.Vector3();
+                const sigma = this.sigma(position, t);
+                const radial = position.clone().multiplyScalar(1 / r);
+                return radial.multiplyScalar(-sigma / this.lengthScale);
+            }
+
+            phi(position, t) {
+                return Math.exp(this.sigma(position, t));
+            }
+        }
+
+        function pairwiseForce(bi, bj, t, scale, beta) {
+            const massI = bi.userData.mass || 0;
+            const massJ = bj.userData.mass || 0;
+            if (!massI || !massJ) return new THREE.Vector3();
+
+            const r = new THREE.Vector3().subVectors(bj.position, bi.position);
+            const distSq = Math.max(r.lengthSq(), 1e-6);
+            const dist = Math.sqrt(distSq);
+            const inv = 1 / dist;
+            const inv3 = inv * inv * inv;
+
+            const sigmaI = scale.sigma(bi.position, t);
+            const gradSigma = scale.gradSigma(bi.position, t);
+            const phiBeta = Math.exp(beta * sigmaI);
+
+            const massProduct = G * massI * massJ;
+            const newton = r.clone().multiplyScalar(massProduct * phiBeta * inv3);
+            const coeff = -beta * massProduct * phiBeta * inv;
+            const weyl = gradSigma.clone().multiplyScalar(coeff);
+
+            return newton.add(weyl);
+        }
+
+        class PhysicsEngine {
+            constructor() {
+                this.scaleField = new ScaleField();
+                this.bodies = [];
+                this.time = 0;
+                this.grades = [
+                    { k: +1, c: 0.5 },
+                    { k: -1, c: 0.5 }
+                ];
+            }
+
+            registerBody(mesh, { mass, velocity = null, dynamic = true } = {}) {
+                mesh.userData.mass = mass;
+                mesh.userData.dynamic = dynamic;
+                mesh.userData.velocity = velocity ? velocity.clone() : (mesh.userData.velocity || new THREE.Vector3());
+                mesh.userData.accel = new THREE.Vector3();
+                this.bodies.push(mesh);
+            }
+
+            deregisterBody(mesh) {
+                const idx = this.bodies.indexOf(mesh);
+                if (idx !== -1) {
+                    this.bodies.splice(idx, 1);
+                }
+            }
+
+            accumulateForces(t, beta) {
+                for (const body of this.bodies) {
+                    if (!body.userData.accel) body.userData.accel = new THREE.Vector3();
+                    body.userData.accel.set(0, 0, 0);
+                }
+
+                for (let i = 0; i < this.bodies.length; i++) {
+                    for (let j = i + 1; j < this.bodies.length; j++) {
+                        const bi = this.bodies[i];
+                        const bj = this.bodies[j];
+                        const force = pairwiseForce(bi, bj, t, this.scaleField, beta);
+                        if (force.lengthSq() === 0) continue;
+
+                        if (bi.userData.dynamic !== false && bi.userData.mass) {
+                            bi.userData.accel.addScaledVector(force, 1 / bi.userData.mass);
+                        }
+                        if (bj.userData.dynamic !== false && bj.userData.mass) {
+                            bj.userData.accel.addScaledVector(force, -1 / bj.userData.mass);
+                        }
+                    }
+                }
+            }
+
+            stepSystem(t, beta, dt) {
+                for (const body of this.bodies) {
+                    if (body.userData.dynamic === false || !body.userData.mass) continue;
+
+                    body.userData.velocity.addScaledVector(body.userData.accel, 0.5 * dt);
+                }
+
+                for (const body of this.bodies) {
+                    if (body.userData.dynamic === false || !body.userData.mass) continue;
+                    body.position.addScaledVector(body.userData.velocity, dt);
+                }
+
+                this.accumulateForces(t + dt, beta);
+
+                for (const body of this.bodies) {
+                    if (body.userData.dynamic === false || !body.userData.mass) continue;
+                    body.userData.velocity.addScaledVector(body.userData.accel, 0.5 * dt);
+                }
+            }
+
+            integrate(dt) {
+                let t = this.time;
+                for (const { k, c } of this.grades) {
+                    const slice = c * dt;
+                    const beta = BASE_BETA * k;
+                    this.accumulateForces(t, beta);
+                    this.stepSystem(t, beta, slice);
+                    t += slice;
+                }
+                this.time += dt;
+            }
+
+            computeModifiedEnergy() {
+                let kinetic = 0;
+                let potential = 0;
+                let sigmaTerm = 0;
+                const beta = BASE_BETA;
+                for (const body of this.bodies) {
+                    const m = body.userData.mass || 0;
+                    if (!m) continue;
+                    const v = body.userData.velocity ? body.userData.velocity.length() : 0;
+                    kinetic += 0.5 * m * v * v;
+                    sigmaTerm += beta * m * this.scaleField.sigma(body.position, this.time);
+                }
+
+                for (let i = 0; i < this.bodies.length; i++) {
+                    for (let j = i + 1; j < this.bodies.length; j++) {
+                        const bi = this.bodies[i];
+                        const bj = this.bodies[j];
+                        const mi = bi.userData.mass || 0;
+                        const mj = bj.userData.mass || 0;
+                        if (!mi || !mj) continue;
+                        const r = new THREE.Vector3().subVectors(bj.position, bi.position);
+                        const dist = Math.max(r.length(), 1e-6);
+                        const sigmaAvg = 0.5 * (this.scaleField.sigma(bi.position, this.time) + this.scaleField.sigma(bj.position, this.time));
+                        const phiBeta = Math.exp(beta * sigmaAvg);
+                        potential += -G * mi * mj * phiBeta / dist;
+                    }
+                }
+
+                return kinetic + potential + sigmaTerm;
+            }
+        }
+
         // ============================================================================
         // GPU-ACCELERATED FIL MANIFOLD - 100K CELLS (UNCHANGED)
         // ============================================================================
@@ -928,9 +1096,12 @@
                 
                 this.setupLights();
                 this.setupSpace();
-                
+
                 this.earth = this.createEarth();
                 this.sun = this.createSun();
+                this.physics = new PhysicsEngine();
+                this.physics.registerBody(this.earth, { mass: EARTH_MASS, dynamic: false });
+                this.physics.registerBody(this.sun, { mass: SUN_MASS, dynamic: false });
                 this.satellites = [];
                 this.asteroids = [];
                 this.beams = [];
@@ -974,9 +1145,12 @@
                 this.intensity = 0;
                 this.ablationRate = 0; // kg/s
                 this.thrustForce = 0; // N
+                this.modifiedEnergy = 0;
                 
                 this.spawnInitialSatellites();
-                
+
+                this.modifiedEnergy = this.physics.computeModifiedEnergy();
+
                 window.addEventListener('resize', () => this.onResize());
                 this.setupInput();
                 
@@ -1088,13 +1262,21 @@
                 sat.add(panel2);
                 
                 sat.userData = {
-                    velocity: new THREE.Vector3(0, 0, 0),
                     power: 100,
                     mirrorAngle: new THREE.Vector2(0, 0)
                 };
-                
+
+                const relPos = sat.position.clone().sub(this.earth.position);
+                const orbitalRadius = Math.max(relPos.length(), 1);
+                let tangent = new THREE.Vector3().crossVectors(relPos, new THREE.Vector3(0, 0, 1));
+                if (tangent.lengthSq() < 1e-6) {
+                    tangent = new THREE.Vector3().crossVectors(relPos, new THREE.Vector3(0, 1, 0));
+                }
+                tangent.normalize().multiplyScalar(Math.sqrt((G * EARTH_MASS) / orbitalRadius));
+
                 this.scene.add(sat);
                 this.satellites.push(sat);
+                this.physics.registerBody(sat, { mass: SATELLITE_MASS, velocity: tangent });
             }
             
             spawnAsteroid() {
@@ -1134,10 +1316,11 @@
                     ablationDV: new THREE.Vector3(0, 0, 0),
                     beingEngaged: false
                 };
-                
+
                 this.scene.add(asteroid);
                 this.asteroids.push(asteroid);
-                
+                this.physics.registerBody(asteroid, { mass: asteroid.userData.mass, velocity: dir.clone() });
+
                 console.log(`🪨 Asteroid detected at 2 AU: ${radius.toFixed(0)}m, ${(asteroid.userData.mass/1e6).toFixed(1)}kt`);
             }
             
@@ -1208,110 +1391,100 @@
             
             reset() {
                 // Clear asteroids
-                this.asteroids.forEach(ast => this.scene.remove(ast));
+                this.asteroids.forEach(ast => {
+                    this.scene.remove(ast);
+                    this.physics.deregisterBody(ast);
+                });
                 this.asteroids = [];
-                
+                this.currentTarget = null;
+
                 // Reset score
                 this.agent.earthHits = 0;
                 this.agent.deflections = 0;
                 this.agent.wave = 1;
-                
+
+                this.modifiedEnergy = this.physics.computeModifiedEnergy();
+
                 console.log('🔄 Simulation reset');
             }
             
             update() {
-                // Emergency auto-engage for threats within engagement window (1 AU)
+                this.physics.integrate(DT);
+                this.modifiedEnergy = this.physics.computeModifiedEnergy();
+
+                if (!this.currentTarget) {
+                    this.trajectoryPool.forEach(t => t.visible = false);
+                }
+
                 if (!this.currentTarget || this.asteroids.indexOf(this.currentTarget) === -1) {
                     const closest = this.asteroids.reduce((closest, ast) => {
                         const dist = ast.position.length();
                         return dist < closest.dist ? { ast, dist } : closest;
                     }, { ast: null, dist: Infinity });
-                    
-                    if (closest.ast && closest.dist < 150000) { // 1 AU engagement window
+
+                    if (closest.ast && closest.dist < 150000) {
                         this.currentTarget = closest.ast;
                         const distAU = (closest.dist / 150000).toFixed(2);
                         console.log(`⚠️ EMERGENCY LOCK: ${distAU} AU`);
                     }
                 }
-                
-                // Agent decision
+
                 if (this.agent.active) {
                     const action = this.agent.decide(this);
                     if (action) this.executeAction(action);
                 }
-                
-                // Update satellites
+
                 this.satellites.forEach(sat => {
-                    // Orbital motion (simplified)
-                    const r = sat.position.length();
-                    const v = Math.sqrt(398600 / r) * 0.01; // Simplified orbital velocity
-                    const tangent = new THREE.Vector3()
-                        .crossVectors(sat.position, new THREE.Vector3(0, 0, 1))
-                        .normalize()
-                        .multiplyScalar(v);
-                    
-                    sat.position.add(tangent);
-                    
-                    // SATELLITE MOVEMENT AI: Move toward optimal beam position
+                    if (!sat.userData || !sat.userData.velocity) return;
+
                     if (this.currentTarget) {
-                        // Calculate ideal position: between sun and target
                         const toSun = new THREE.Vector3()
                             .subVectors(this.sun.position, this.currentTarget.position)
                             .normalize();
-                        
-                        // Focal point on asteroid
                         const radius = this.currentTarget.userData.radius;
                         const focalOffset = toSun.clone().multiplyScalar(radius * 0.6);
                         const focalPoint = this.currentTarget.position.clone().add(focalOffset);
-                        
-                        // Ideal position: along sun-to-focal line, at orbital radius
+
                         const sunToFocal = new THREE.Vector3()
                             .subVectors(focalPoint, this.sun.position)
                             .normalize();
-                        const orbitalRadius = 8000;
+                        const orbitalRadius = sat.position.distanceTo(this.earth.position);
                         const idealPos = focalPoint.clone().add(sunToFocal.clone().multiplyScalar(orbitalRadius * 0.3));
-                        
-                        // Move satellite toward ideal position (slow drift)
+
                         const toIdeal = new THREE.Vector3().subVectors(idealPos, sat.position);
-                        const drift = toIdeal.normalize().multiplyScalar(5); // 5 km/frame drift
-                        sat.position.add(drift);
+                        if (toIdeal.lengthSq() > 1) {
+                            const adjustAccel = toIdeal.normalize().multiplyScalar(0.0005);
+                            sat.userData.velocity.addScaledVector(adjustAccel, DT);
+                        }
                     }
-                    
+
                     sat.lookAt(this.currentTarget ? this.currentTarget.position : this.earth.position);
                 });
-                
-                // Update asteroids
+
                 for (let idx = this.asteroids.length - 1; idx >= 0; idx--) {
                     const ast = this.asteroids[idx];
                     if (!ast || !ast.userData) continue;
-                    
-                    ast.position.add(ast.userData.velocity);
-                    ast.position.add(ast.userData.ablationDV);
-                    ast.userData.ablationDV.multiplyScalar(0.99); // Decay
-                    
-                    // Rotation now controlled by torque physics
-                    // (Applied in updateMirrorFocus when engaged)
-                    
-                    // Draw predicted trajectories if targeted
+
+                    ast.userData.ablationDV.multiplyScalar(0.999);
+
                     if (ast === this.currentTarget) {
-                        // Hide all pooled trajectories first
                         this.trajectoryPool.forEach(t => t.visible = false);
-                        
+
                         let poolIdx = 0;
-                        
-                        // ORIGINAL TRAJECTORY (RED) - from spawn point
+                        const trajDt = 120; // seconds per prediction step
+
                         if (ast.userData.originalPosition && ast.userData.originalVelocity) {
                             const origPos = ast.userData.originalPosition.clone();
                             const origVel = ast.userData.originalVelocity.clone();
                             const origPoints = [origPos.clone()];
-                            
+
                             for (let i = 0; i < 100; i++) {
-                                origPos.add(origVel);
+                                origPos.addScaledVector(origVel, trajDt);
                                 origPoints.push(origPos.clone());
-                                
+
                                 if (origPos.length() < 6500 || origPos.length() > 50000) break;
                             }
-                            
+
                             if (poolIdx < this.trajectoryPool.length) {
                                 const traj = this.trajectoryPool[poolIdx++];
                                 const positions = new Float32Array(origPoints.length * 3);
@@ -1322,24 +1495,23 @@
                                 });
                                 traj.geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
                                 traj.geometry.attributes.position.needsUpdate = true;
-                                traj.material.color.setHex(0xff0000); // RED = original path
+                                traj.material.color.setHex(0xff0000);
                                 traj.visible = true;
                             }
                         }
-                        
-                        // CURRENT TRAJECTORY (GREEN/RED) - from current position
+
                         const futurePos = ast.position.clone();
                         const futureVel = ast.userData.velocity.clone();
                         const currentPoints = [futurePos.clone()];
-                        
+
                         for (let i = 0; i < 100; i++) {
-                            futurePos.add(futureVel);
+                            futurePos.addScaledVector(futureVel, trajDt);
                             currentPoints.push(futurePos.clone());
-                            
-                            if (futurePos.length() < 6500) break; // Would hit
-                            if (futurePos.length() > 50000) break; // Cleared
+
+                            if (futurePos.length() < 6500) break;
+                            if (futurePos.length() > 50000) break;
                         }
-                        
+
                         if (poolIdx < this.trajectoryPool.length) {
                             const traj = this.trajectoryPool[poolIdx++];
                             const positions = new Float32Array(currentPoints.length * 3);
@@ -1351,31 +1523,31 @@
                             traj.geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
                             traj.geometry.attributes.position.needsUpdate = true;
                             const willHit = futurePos.length() < 6500;
-                            traj.material.color.setHex(willHit ? 0xff8800 : 0x00ff00); // ORANGE=danger, GREEN=safe
+                            traj.material.color.setHex(willHit ? 0xff8800 : 0x00ff00);
                             traj.visible = true;
                         }
                     }
-                    
-                    // Check Earth collision
+
                     const dist = ast.position.length();
                     if (dist < 6500) {
                         console.log('💥 EARTH IMPACT!');
                         this.agent.onEarthHit();
+                        this.physics.deregisterBody(ast);
                         this.scene.remove(ast);
                         this.asteroids.splice(idx, 1);
                         if (this.currentTarget === ast) {
                             this.currentTarget = null;
                         }
-                        
+
                         document.getElementById('alert').style.display = 'block';
                         setTimeout(() => {
                             document.getElementById('alert').style.display = 'none';
                         }, 2000);
                         continue;
                     }
-                    
-                    // Remove if beyond detection range (2+ AU)
+
                     if (dist > 350000) {
+                        this.physics.deregisterBody(ast);
                         this.scene.remove(ast);
                         this.asteroids.splice(idx, 1);
                         if (this.currentTarget === ast) {
@@ -1383,17 +1555,15 @@
                         }
                     }
                 }
-                
-                // Solar mirror physics
+
                 if (this.currentTarget) {
                     this.updateMirrorFocus();
                 }
-                
-                // Spawn asteroids (reduced rate for realistic threat frequency)
+
                 if (Math.random() < 0.002 && this.asteroids.length < 8) {
                     this.spawnAsteroid();
                 }
-                
+
                 this.updateUI();
                 this.controls.update();
                 this.renderer.render(this.scene, this.camera);
@@ -1512,10 +1682,10 @@
                         .add(lateralBias.clone().multiplyScalar(0.3))
                         .normalize();
                     
-                    // Apply translational thrust (boosted for gameplay)
-                    const deltaV = finalThrustDir.multiplyScalar(accel * 0.016 * 100);
+                    const thrustBoost = 100;
+                    const deltaV = finalThrustDir.clone().multiplyScalar((accel * DT * thrustBoost) / 1000);
                     this.currentTarget.userData.velocity.add(deltaV);
-                    
+
                     // Apply TORQUE from off-center thrust
                     const leverArm = focalOffset.clone();
                     const torque = new THREE.Vector3().crossVectors(leverArm, finalThrustDir.clone().multiplyScalar(F_thrust));
@@ -1528,7 +1698,7 @@
                     
                     const torqueAxis = torque.normalize();
                     this.currentTarget.userData.angularVelocity.add(
-                        torqueAxis.multiplyScalar(angularAccel * 0.016)
+                        torqueAxis.multiplyScalar(angularAccel * DT)
                     );
                     
                     // Clamp angular velocity to prevent visual chaos
@@ -1545,14 +1715,14 @@
                     
                     // Track cumulative ΔV
                     this.currentTarget.userData.ablationDV.add(deltaV);
-                    const totalDeltaV = this.currentTarget.userData.ablationDV.length();
+                    const totalDeltaV = this.currentTarget.userData.ablationDV.length() * 1000;
                     
                     // Store metrics
                     this.ablationRate = m_dot;
                     this.thrustForce = F_thrust;
                     
                     // Log physics periodically
-                    if (Math.random() < 0.016) {
+                    if (Math.random() < DT) {
                         const spinRate = this.currentTarget.userData.angularVelocity.length() * 180 / Math.PI;
                         console.log(`🔥 P=${(P_laser/1e6).toFixed(2)}MW | Ablation=${m_dot.toFixed(4)}kg/s | Thrust=${F_thrust.toFixed(2)}N | ΔV=${totalDeltaV.toFixed(2)}m/s | Spin=${spinRate.toFixed(1)}°/s`);
                     }
@@ -1600,7 +1770,7 @@
                     const distToEarth = this.currentTarget.position.length();
                     const velTowardEarth = this.currentTarget.userData.velocity.dot(
                         new THREE.Vector3().subVectors(this.earth.position, this.currentTarget.position).normalize()
-                    );
+                    ) * 1000;
                     
                     // Progress indicator
                     if (totalDeltaV > 5 && totalDeltaV < 15 && Math.random() < 0.05) {
@@ -1620,6 +1790,7 @@
                         console.log(`  Distance: ${(distToEarth/150000).toFixed(2)} AU`);
                         this.agent.onDeflection(this.currentTarget);
                         
+                        this.physics.deregisterBody(this.currentTarget);
                         this.scene.remove(this.currentTarget);
                         const idx = this.asteroids.indexOf(this.currentTarget);
                         if (idx >= 0) this.asteroids.splice(idx, 1);
@@ -1709,13 +1880,13 @@
                     const distAU = dist / 150000; // Convert to AU
                     document.getElementById('target-distance').textContent = distAU.toFixed(2) + ' AU';
                     const vel = this.currentTarget.userData.velocity.length();
-                    document.getElementById('target-velocity').textContent = vel.toFixed(0) + ' km/s';
-                    
-                    const dv = this.currentTarget.userData.ablationDV.length();
+                    document.getElementById('target-velocity').textContent = vel.toFixed(1) + ' km/s';
+
+                    const dv = this.currentTarget.userData.ablationDV.length() * 1000;
                     document.getElementById('delta-v').textContent = dv.toFixed(1) + ' m/s';
-                    
+
                     const timeToImpact = vel > 0 ? dist / vel : 999;
-                    const timeHours = timeToImpact * 0.016 / 3600; // Convert to hours
+                    const timeHours = timeToImpact / 3600; // Convert to hours
                     if (timeHours > 24) {
                         document.getElementById('impact-eta').textContent = (timeHours / 24).toFixed(1) + ' days';
                     } else {
@@ -1737,11 +1908,14 @@
                 // Physics
                 const photonFlux = this.convergence > 30 ? (this.convergence / 100).toFixed(2) : '0.0';
                 document.getElementById('photon-flux').textContent = photonFlux;
-                
-                const ejectaDV = this.currentTarget && this.currentTarget.userData ? 
-                    this.currentTarget.userData.ablationDV.length().toFixed(1) : '0.0';
+
+                const ejectaDV = this.currentTarget && this.currentTarget.userData ?
+                    (this.currentTarget.userData.ablationDV.length() * 1000).toFixed(1) : '0.0';
                 document.getElementById('ejecta-dv').textContent = ejectaDV;
-                
+
+                const energyEJ = this.modifiedEnergy ? this.modifiedEnergy / 1e18 : 0;
+                document.getElementById('modified-energy').textContent = energyEJ.toFixed(3);
+
                 const spallRate = this.intensity > 0.1 ? (this.intensity * 5).toFixed(1) : '0.0';
                 document.getElementById('spall-rate').textContent = spallRate;
             }
