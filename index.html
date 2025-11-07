@@ -190,6 +190,10 @@
                     <div class="key">Time Scale: <span id="time-scale" class="stat">1.0×</span></div>
                     <input type="range" id="time-slider" min="0.1" max="20" step="0.1" value="1">
                 </div>
+                <div class="control-group">
+                    <div class="key">Asteroid Mass Scale: <span id="asteroid-mass-scale" class="stat">1.0×</span></div>
+                    <input type="range" id="mass-slider" min="0.1" max="5" step="0.1" value="1">
+                </div>
             </div>
 
             <div class="section">
@@ -1370,6 +1374,7 @@
                 this.thrustForce = 0; // N
                 this.modifiedEnergy = 0;
                 this.ablationTimeWarp = 3600; // simulate 1 hour of dwell per simulation second
+                this.asteroidMassScale = 1;
 
                 this.spawnInitialSatellites();
 
@@ -1649,7 +1654,7 @@
             spawnAsteroid() {
                 const radius = 50 + Math.random() * 200;
                 const geometry = new THREE.SphereGeometry(radius, 16, 16);
-                const material = new THREE.MeshPhongMaterial({ 
+                const material = new THREE.MeshPhongMaterial({
                     color: 0x888888,
                     emissive: 0x222222,
                     emissiveIntensity: 0
@@ -1672,8 +1677,10 @@
                     .subVectors(this.earth.position, asteroid.position)
                     .normalize()
                     .multiplyScalar(30 + Math.random() * 20); // REDUCED: 30-50 km/s (was 100-150)
-                
-                const mass = (4/3) * Math.PI * Math.pow(radius, 3) * 2200;
+
+                const baseMass = (4/3) * Math.PI * Math.pow(radius, 3) * 2200;
+                const massScale = Math.max(0.1, this.asteroidMassScale || 1);
+                const mass = baseMass * massScale;
 
                 asteroid.userData = {
                     id: Math.random().toString(36),
@@ -1683,6 +1690,8 @@
                     radius: radius,
                     mass,
                     originalMass: mass,
+                    baseMass,
+                    massScale,
                     minMass: mass * 0.1,
                     ablationDV: new THREE.Vector3(0, 0, 0),
                     beingEngaged: false
@@ -1692,7 +1701,28 @@
                 this.asteroids.push(asteroid);
                 this.physics.registerBody(asteroid, { mass: asteroid.userData.mass, velocity: dir.clone() });
 
-                console.log(`🪨 Asteroid detected at 2 AU: ${radius.toFixed(0)}m, ${(asteroid.userData.mass/1e6).toFixed(1)}kt`);
+                console.log(`🪨 Asteroid detected at 2 AU: ${radius.toFixed(0)}m, ${(asteroid.userData.mass/1e6).toFixed(1)} kt (mass scale ${massScale.toFixed(1)}×)`);
+            }
+
+            setAsteroidMassScale(scale) {
+                const clamped = Math.max(0.1, Math.min(5, scale));
+                const previousScale = this.asteroidMassScale || 1;
+                this.asteroidMassScale = Math.round(clamped * 10) / 10;
+
+                this.asteroids.forEach(ast => {
+                    if (!ast.userData) return;
+                    const baseMass = ast.userData.baseMass || (ast.userData.originalMass || ast.userData.mass);
+                    const oldOriginal = ast.userData.originalMass || (baseMass * previousScale);
+                    const remainingFraction = oldOriginal > 0 ? (ast.userData.mass / oldOriginal) : 1;
+                    const newOriginal = baseMass * this.asteroidMassScale;
+                    const newMin = newOriginal * 0.1;
+                    const adjustedMass = Math.max(newMin, newOriginal * remainingFraction);
+
+                    ast.userData.originalMass = newOriginal;
+                    ast.userData.mass = adjustedMass;
+                    ast.userData.minMass = newMin;
+                    ast.userData.massScale = this.asteroidMassScale;
+                });
             }
             
             setupInput() {
@@ -1865,8 +1895,7 @@
                     const ast = this.asteroids[idx];
                     if (!ast || !ast.userData) continue;
 
-                    ast.userData.ablationDV.multiplyScalar(0.999);
-
+                    // Preserve cumulative ablation Δv so thrust-driven course changes persist
                     if (ast === this.currentTarget) {
                         this.trajectoryPool.forEach(t => t.visible = false);
 
@@ -2367,6 +2396,14 @@
                 if (timeSlider) {
                     timeSlider.value = this.timeScale.toFixed(1);
                 }
+                const massScaleEl = document.getElementById('asteroid-mass-scale');
+                if (massScaleEl) {
+                    massScaleEl.textContent = this.asteroidMassScale.toFixed(1) + '×';
+                }
+                const massSlider = document.getElementById('mass-slider');
+                if (massSlider) {
+                    massSlider.value = this.asteroidMassScale.toFixed(1);
+                }
 
                 const coherence = this.convergence > 50 ? 100 : Math.floor(this.convergence * 2);
                 document.getElementById('coherence').textContent = coherence;
@@ -2482,6 +2519,16 @@
                 const value = parseFloat(event.target.value);
                 if (!Number.isNaN(value)) {
                     space.setTimeScale(value);
+                }
+            });
+        }
+
+        const massSlider = document.getElementById('mass-slider');
+        if (massSlider) {
+            massSlider.addEventListener('input', (event) => {
+                const value = parseFloat(event.target.value);
+                if (!Number.isNaN(value)) {
+                    space.setAsteroidMassScale(value);
                 }
             });
         }
