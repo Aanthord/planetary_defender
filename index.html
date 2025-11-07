@@ -14,6 +14,23 @@
             font-family: 'Courier New', monospace;
             overflow: hidden;
         }
+        input[type="range"],
+        input[type="number"] {
+            width: 100%;
+            margin-top: 4px;
+            background: #050505;
+            color: #00ff00;
+            border: 1px solid #00ff00;
+            font-family: 'Courier New', monospace;
+            font-size: 10px;
+        }
+        input[type="range"] {
+            accent-color: #00ff00;
+            height: 16px;
+        }
+        .control-group {
+            margin-bottom: 6px;
+        }
         #game-container {
             display: flex;
             width: 100vw;
@@ -108,7 +125,7 @@
         <div id="legend">
             <h2 style="color: #ff6b6b; margin: 0 0 8px 0; font-size: 15px;">SWARM DEFENSE v2.1</h2>
             <div style="color: #888; font-size: 9px; margin-bottom: 10px;">
-                <span class="brain">50 SATS</span> | 
+                <span class="brain" id="header-sat-count">50 SATS</span> |
                 <span class="gpu" id="gpu-status">55 MW</span> | 
                 <span class="quantum">2 AU DETECT</span>
             </div>
@@ -157,8 +174,20 @@
             </div>
 
             <div class="section">
+                <h3>RUNTIME CONFIG</h3>
+                <div class="control-group">
+                    <div class="key">Swarm Size Target: <span id="swarm-target" class="stat">50</span></div>
+                    <input type="range" id="satellite-slider" min="10" max="5000" step="10" value="50">
+                </div>
+                <div class="control-group">
+                    <div class="key">Power Multiplier: <span id="power-multiplier" class="stat">1.0×</span></div>
+                    <input type="range" id="power-slider" min="1" max="100" step="0.1" value="1">
+                </div>
+            </div>
+
+            <div class="section">
                 <h3>SOLAR MIRRORS</h3>
-                <div class="key">Power/Sat: <span class="swarm">1.1</span> MW</div>
+                <div class="key">Power/Sat: <span class="swarm" id="power-per-sat">1.1</span> MW</div>
                 <div class="key">Total Power: <span id="total-power" class="swarm">55</span> MW</div>
                 <div class="key">Focus: <span id="focus-quality" class="stat">0.0</span></div>
                 <div class="key">Convergence: <span id="convergence" class="stat">0</span>%</div>
@@ -1105,8 +1134,13 @@
                 this.satellites = [];
                 this.asteroids = [];
                 this.beams = [];
+                this.basePowerPerSatelliteMW = 1.1;
+                this.powerMultiplier = 1;
+                this.maxSatelliteCapacity = 5000;
+                this.targetSatelliteCount = 50;
+                this.safeDeflectionDistance = 9000; // km, radius target for safe miss
                 this.swarmPower = 100;
-                
+
                 this.trajectoryLines = []; // Predicted paths
                 this.thrustVectors = []; // Thrust direction indicators
                 
@@ -1146,7 +1180,7 @@
                 this.ablationRate = 0; // kg/s
                 this.thrustForce = 0; // N
                 this.modifiedEnergy = 0;
-                
+
                 this.spawnInitialSatellites();
 
                 this.modifiedEnergy = this.physics.computeModifiedEnergy();
@@ -1217,24 +1251,28 @@
             }
             
             spawnInitialSatellites() {
-                // 50-satellite defensive constellation
-                for (let i = 0; i < 50; i++) {
-                    const theta = (i / 50) * Math.PI * 2;
-                    const phi = Math.acos(2 * (i / 50) - 1); // Fibonacci sphere distribution
+                // Spawn constellation based on configured target count
+                const count = Math.min(this.targetSatelliteCount, this.maxSatelliteCapacity);
+                for (let i = 0; i < count; i++) {
+                    const theta = (i / count) * Math.PI * 2;
+                    const phi = Math.acos(2 * (i / count) - 1);
                     const r = 8000;
-                    
+
                     const x = r * Math.sin(phi) * Math.cos(theta);
                     const y = r * Math.sin(phi) * Math.sin(theta);
                     const z = r * Math.cos(phi);
-                    
+
                     this.spawnSatellite(x, y, z);
                 }
-                
-                console.log('🛰️ 50-satellite constellation deployed!');
+
+                this.targetSatelliteCount = count;
+                this.updateSwarmTelemetry();
+
+                console.log(`🛰️ ${count}-satellite constellation deployed!`);
                 console.log('📡 Detection range: 2 AU (300M km)');
                 console.log('🎯 Engagement range: 1 AU (150M km)');
                 console.log('🪙 1000m² gold parabolic mirrors');
-                console.log('⚡ Total power: 55 MW');
+                console.log(`⚡ Total power: ${(this.getTotalPowerMW()).toFixed(0)} MW`);
             }
             
             spawnSatellite(x, y, z) {
@@ -1277,6 +1315,127 @@
                 this.scene.add(sat);
                 this.satellites.push(sat);
                 this.physics.registerBody(sat, { mass: SATELLITE_MASS, velocity: tangent });
+            }
+
+            removeSatellite() {
+                const sat = this.satellites.pop();
+                if (!sat) return;
+                this.scene.remove(sat);
+                this.physics.deregisterBody(sat);
+            }
+
+            setTargetSatelliteCount(count) {
+                const clamped = Math.max(0, Math.min(this.maxSatelliteCapacity, Math.floor(count)));
+                this.targetSatelliteCount = clamped;
+
+                while (this.satellites.length < clamped) {
+                    const theta = Math.random() * Math.PI * 2;
+                    const phi = Math.acos(2 * Math.random() - 1);
+                    const r = 8000 + Math.random() * 2000;
+                    const x = r * Math.sin(phi) * Math.cos(theta);
+                    const y = r * Math.sin(phi) * Math.sin(theta);
+                    const z = r * Math.cos(phi);
+                    this.spawnSatellite(x, y, z);
+                }
+
+                while (this.satellites.length > clamped) {
+                    this.removeSatellite();
+                }
+
+                this.redistributeSatellites();
+                this.updateSwarmTelemetry();
+            }
+
+            setPowerMultiplier(multiplier) {
+                const clamped = Math.max(1, Math.min(100, multiplier));
+                this.powerMultiplier = Math.round(clamped * 10) / 10;
+                this.updateSwarmTelemetry();
+            }
+
+            redistributeSatellites() {
+                const count = this.satellites.length;
+                if (count === 0) return;
+                const radius = 8000;
+                for (let i = 0; i < count; i++) {
+                    const sat = this.satellites[i];
+                    const theta = (i / count) * Math.PI * 2;
+                    const phi = Math.acos(2 * (i / count) - 1);
+                    const x = radius * Math.sin(phi) * Math.cos(theta);
+                    const y = radius * Math.sin(phi) * Math.sin(theta);
+                    const z = radius * Math.cos(phi);
+                    sat.position.set(x, y, z);
+
+                    const relPos = sat.position.clone();
+                    const orbitalRadius = Math.max(relPos.length(), 1);
+                    let tangent = new THREE.Vector3().crossVectors(relPos, new THREE.Vector3(0, 0, 1));
+                    if (tangent.lengthSq() < 1e-6) {
+                        tangent = new THREE.Vector3().crossVectors(relPos, new THREE.Vector3(0, 1, 0));
+                    }
+                    tangent.normalize().multiplyScalar(Math.sqrt((G * EARTH_MASS) / orbitalRadius));
+                    sat.userData.velocity = tangent;
+                    if (sat.userData.accel) {
+                        sat.userData.accel.set(0, 0, 0);
+                    }
+                }
+            }
+
+            getTotalPowerMW() {
+                return this.satellites.length * this.basePowerPerSatelliteMW * this.powerMultiplier;
+            }
+
+            updateSwarmTelemetry() {
+                const totalPowerMW = this.getTotalPowerMW();
+                const baselinePower = 50 * this.basePowerPerSatelliteMW;
+                this.swarmPower = baselinePower > 0 ? (totalPowerMW / baselinePower) * 100 : this.powerMultiplier * 100;
+                const swarmTargetEl = document.getElementById('swarm-target');
+                if (swarmTargetEl) {
+                    swarmTargetEl.textContent = this.targetSatelliteCount;
+                }
+                const powerMultiplierEl = document.getElementById('power-multiplier');
+                if (powerMultiplierEl) {
+                    powerMultiplierEl.textContent = this.powerMultiplier.toFixed(1) + '×';
+                }
+                const gpuStatus = document.getElementById('gpu-status');
+                if (gpuStatus) {
+                    gpuStatus.textContent = totalPowerMW.toFixed(0) + ' MW';
+                }
+                const slider = document.getElementById('satellite-slider');
+                if (slider) {
+                    slider.value = this.targetSatelliteCount.toString();
+                }
+                const powerSlider = document.getElementById('power-slider');
+                if (powerSlider) {
+                    powerSlider.value = this.powerMultiplier.toFixed(1);
+                }
+            }
+
+            calculateRequiredDeltaV(asteroid) {
+                if (!asteroid || !asteroid.userData || !asteroid.userData.velocity) {
+                    return 0;
+                }
+                const relativePosition = asteroid.position.clone();
+                const relativeVelocity = asteroid.userData.velocity.clone();
+                const speedSq = relativeVelocity.lengthSq();
+                if (speedSq < 1e-6) {
+                    return 0;
+                }
+
+                const timeToClosest = -relativePosition.dot(relativeVelocity) / speedSq;
+                if (timeToClosest <= 0) {
+                    return 0;
+                }
+
+                const closestApproach = relativePosition.clone()
+                    .add(relativeVelocity.clone().multiplyScalar(timeToClosest))
+                    .length();
+
+                if (closestApproach >= this.safeDeflectionDistance) {
+                    return 0;
+                }
+
+                const requiredOffset = this.safeDeflectionDistance - closestApproach;
+                const requiredDeltaV = requiredOffset / Math.max(timeToClosest, 1); // km/s
+                return Math.max(0, requiredDeltaV * 1000); // convert to m/s
             }
             
             spawnAsteroid() {
@@ -1374,19 +1533,10 @@
             
             deploySwarm() {
                 console.log('🚀 Deploying reinforcements...');
-                for (let i = 0; i < 10; i++) {
-                    const theta = Math.random() * Math.PI * 2;
-                    const phi = Math.acos(2 * Math.random() - 1);
-                    const r = 8000 + Math.random() * 2000;
-                    
-                    const x = r * Math.sin(phi) * Math.cos(theta);
-                    const y = r * Math.sin(phi) * Math.sin(theta);
-                    const z = r * Math.cos(phi);
-                    
-                    this.spawnSatellite(x, y, z);
-                }
-                console.log(`🛰️ Swarm expanded to ${this.satellites.length} satellites`);
-                console.log(`⚡ Total power now: ${(this.satellites.length * 1.1).toFixed(0)} MW`);
+                const newTarget = Math.min(this.targetSatelliteCount + 10, this.maxSatelliteCapacity);
+                this.setTargetSatelliteCount(newTarget);
+                console.log(`🛰️ Swarm target set to ${this.targetSatelliteCount} satellites`);
+                console.log(`⚡ Total power now: ${(this.getTotalPowerMW()).toFixed(0)} MW`);
             }
             
             reset() {
@@ -1639,8 +1789,9 @@
                 const concentrationEfficiency = 0.85; // Parabolic focus
                 const convergenceFactor = this.convergence / 100;
                 
-                const P_laser = this.satellites.length * mirrorArea * solarFlux * 
-                               reflectivity * concentrationEfficiency * convergenceFactor;
+                const P_laser = this.satellites.length * mirrorArea * solarFlux *
+                               reflectivity * concentrationEfficiency * convergenceFactor *
+                               this.powerMultiplier;
                 
                 this.intensity = P_laser; // Store in watts
                 
@@ -1777,14 +1928,17 @@
                         console.log(`⚡ Deflection progress: ${totalDeltaV.toFixed(1)}/15 m/s (${(totalDeltaV/15*100).toFixed(0)}%)`);
                     }
                     
-                    const deflectionSuccess = totalDeltaV > 15 || velTowardEarth < 10;
-                    
-                    if (deflectionSuccess && totalDeltaV > 5) {
+                    const requiredDeltaV = this.calculateRequiredDeltaV(this.currentTarget);
+                    this.currentTarget.userData.requiredDeltaV = requiredDeltaV;
+                    const deflectionSuccess = (requiredDeltaV > 0 ? totalDeltaV >= requiredDeltaV : totalDeltaV > 5) || velTowardEarth < 10;
+
+                    if (deflectionSuccess && (totalDeltaV > 1 || requiredDeltaV === 0)) {
                         const approaching = velTowardEarth > 0;
-                        const spinRate = this.currentTarget.userData.angularVelocity ? 
+                        const spinRate = this.currentTarget.userData.angularVelocity ?
                             (this.currentTarget.userData.angularVelocity.length() * 180 / Math.PI) : 0;
                         console.log(`✓ DEFLECTION SUCCESS!`);
                         console.log(`  ΔV applied: ${totalDeltaV.toFixed(1)} m/s`);
+                        console.log(`  ΔV required: ${requiredDeltaV.toFixed(1)} m/s`);
                         console.log(`  Spin induced: ${spinRate.toFixed(1)}°/s`);
                         console.log(`  Approach velocity: ${velTowardEarth.toFixed(1)} m/s ${approaching ? '(slowed)' : '(REVERSED!)'}`);
                         console.log(`  Distance: ${(distToEarth/150000).toFixed(2)} AU`);
@@ -1855,17 +2009,41 @@
                 
                 // Swarm
                 document.getElementById('sats-active').textContent = this.satellites.length;
+                const headerSat = document.getElementById('header-sat-count');
+                if (headerSat) {
+                    headerSat.textContent = `${this.satellites.length} SATS`;
+                }
                 document.getElementById('power').textContent = Math.floor(this.swarmPower);
-                
+                const maxSatsEl = document.getElementById('max-sats');
+                if (maxSatsEl) {
+                    maxSatsEl.textContent = this.targetSatelliteCount;
+                }
+                const targetEl = document.getElementById('swarm-target');
+                if (targetEl) {
+                    targetEl.textContent = this.targetSatelliteCount;
+                }
+                const powerMultiplierEl = document.getElementById('power-multiplier');
+                if (powerMultiplierEl) {
+                    powerMultiplierEl.textContent = this.powerMultiplier.toFixed(1) + '×';
+                }
+
                 const coherence = this.convergence > 50 ? 100 : Math.floor(this.convergence * 2);
                 document.getElementById('coherence').textContent = coherence;
-                
+
                 const formation = this.currentTarget ? 'FOCUS' : 'SPHERE';
                 document.getElementById('formation').textContent = formation;
-                
+
                 // Mirrors
-                const totalPower = this.satellites.length * 1.1; // MW
+                const totalPower = this.getTotalPowerMW();
                 document.getElementById('total-power').textContent = totalPower.toFixed(0);
+                const gpuStatus = document.getElementById('gpu-status');
+                if (gpuStatus) {
+                    gpuStatus.textContent = totalPower.toFixed(0) + ' MW';
+                }
+                const powerPerSat = document.getElementById('power-per-sat');
+                if (powerPerSat) {
+                    powerPerSat.textContent = (this.basePowerPerSatelliteMW * this.powerMultiplier).toFixed(1);
+                }
                 document.getElementById('focus-quality').textContent = this.focusQuality.toFixed(2);
                 document.getElementById('convergence').textContent = Math.floor(this.convergence);
                 const intensityMW = this.intensity / 1e6; // Convert W to MW
@@ -1882,8 +2060,9 @@
                     const vel = this.currentTarget.userData.velocity.length();
                     document.getElementById('target-velocity').textContent = vel.toFixed(1) + ' km/s';
 
-                    const dv = this.currentTarget.userData.ablationDV.length() * 1000;
-                    document.getElementById('delta-v').textContent = dv.toFixed(1) + ' m/s';
+                    const appliedDV = this.currentTarget.userData.ablationDV.length() * 1000;
+                    const requiredDV = this.calculateRequiredDeltaV(this.currentTarget);
+                    document.getElementById('delta-v').textContent = `${appliedDV.toFixed(1)} / ${requiredDV.toFixed(1)} m/s`;
 
                     const timeToImpact = vel > 0 ? dist / vel : 999;
                     const timeHours = timeToImpact / 3600; // Convert to hours
@@ -1930,14 +2109,34 @@
         // ============================================================================
         // INITIALIZATION
         // ============================================================================
-        
+
         const space = new SpaceScene();
-        
+
+        const satelliteSlider = document.getElementById('satellite-slider');
+        if (satelliteSlider) {
+            satelliteSlider.addEventListener('input', (event) => {
+                const value = parseInt(event.target.value, 10);
+                if (!Number.isNaN(value)) {
+                    space.setTargetSatelliteCount(value);
+                }
+            });
+        }
+
+        const powerSlider = document.getElementById('power-slider');
+        if (powerSlider) {
+            powerSlider.addEventListener('input', (event) => {
+                const value = parseFloat(event.target.value);
+                if (!Number.isNaN(value)) {
+                    space.setPowerMultiplier(value);
+                }
+            });
+        }
+
         console.log('═══════════════════════════════════════════════');
         console.log('🛰️  SWARM DEFENSE v2.1 - SURGICAL FIXES APPLIED');
         console.log('═══════════════════════════════════════════════');
         console.log('');
-        console.log('🛰️  CONSTELLATION: 50 Satellites (with movement AI)');
+        console.log(`🛰️  CONSTELLATION: ${space.satellites.length} Satellites (with movement AI)`);
         console.log('   • Fibonacci sphere distribution');
         console.log('   • 8000 km orbital radius');
         console.log('   • Auto-repositioning for optimal convergence');
@@ -1946,8 +2145,8 @@
         console.log('   • Area: 1,000 m² per satellite');
         console.log('   • Reflectivity: 95% (gold coating)');
         console.log('   • Concentration: 85% (parabolic focus)');
-        console.log('   • Power per sat: 1.1 MW');
-        console.log('   • TOTAL POWER: 55 MW');
+        console.log(`   • Power per sat: ${(space.basePowerPerSatelliteMW * space.powerMultiplier).toFixed(1)} MW`);
+        console.log(`   • TOTAL POWER: ${(space.getTotalPowerMW()).toFixed(0)} MW`);
         console.log('');
         console.log('📐 CARBONACEOUS CHONDRITE ABLATION:');
         console.log('   • Density: 2,200 kg/m³');
@@ -1990,9 +2189,9 @@
         }
         
         animate();
-        
+
         console.log('🛰️ SWARM DEFENSE v2.1 - SURGICAL FIXES COMPLETE!');
-        console.log('⚡ 50 satellites × 1.1 MW = 55 MW TOTAL POWER');
+        console.log(`⚡ ${space.satellites.length} satellites × ${(space.basePowerPerSatelliteMW * space.powerMultiplier).toFixed(1)} MW = ${(space.getTotalPowerMW()).toFixed(0)} MW TOTAL POWER`);
         console.log('📡 Detection: 2 AU | Engagement: 1 AU');
         console.log('🎯 RED line = original path | GREEN = safe | ORANGE = danger');
         console.log('🤖 Satellites auto-position for optimal beam convergence');
