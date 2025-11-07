@@ -160,6 +160,9 @@
                 <h3>MISSION STATUS</h3>
                 <div class="key">Score: <span id="score-display" class="stat">0</span></div>
                 <div class="key">High: <span id="high-score-display" class="stat">0</span></div>
+                <div class="key">Multiplier: <span id="combo" class="stat">1×</span></div>
+                <div class="key">Streak: <span id="combo-streak" class="stat">0</span></div>
+                <div class="key">Mission Time: <span id="mission-time" class="stat">0:00</span></div>
                 <div class="key">Deflections: <span id="deflections" class="stat">0</span></div>
                 <div class="key">Earth Hits: <span id="earth-hits" class="danger">0</span></div>
                 <div class="key">Wave: <span id="wave" class="stat">1</span></div>
@@ -244,6 +247,18 @@
         const EARTH_MASS = 5.972e24; // kg
         const SUN_MASS = 5e23; // kg (scaled to keep system stable)
         const SATELLITE_MASS = 1200; // kg
+
+        function formatMissionTime(seconds) {
+            const totalSeconds = Math.max(0, Math.floor(seconds || 0));
+            const minutes = Math.floor(totalSeconds / 60);
+            const secs = totalSeconds % 60;
+            const hours = Math.floor(minutes / 60);
+            if (hours > 0) {
+                const mins = minutes % 60;
+                return `${hours}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+            }
+            return `${minutes}:${secs.toString().padStart(2, '0')}`;
+        }
 
         class ScaleField {
             constructor() {
@@ -805,12 +820,13 @@
         // ============================================================================
         
         class SwarmDefenseAgent {
-            constructor() {
+            constructor(game = null) {
+                this.game = game;
                 this.active = true;
                 this.decisions = 0;
                 this.tick = 0;
                 this.currentStrategy = 'PATROL';
-                
+
                 // FIL manifold
                 this.brain = new GPUFILManifold(100000);
                 
@@ -840,10 +856,22 @@
                 
                 // Scoring
                 this.score = 0;
-                this.highScore = parseInt(localStorage.getItem('swarm_high_score') || '0');
+                this.storageAvailable = typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
+                this.highScore = 0;
+                if (this.storageAvailable) {
+                    const stored = window.localStorage.getItem('swarm_high_score');
+                    const parsed = Number.parseInt(stored || '0', 10);
+                    this.highScore = Number.isNaN(parsed) ? 0 : parsed;
+                }
                 this.deflections = 0;
+                this.deflectionsInWave = 0;
                 this.earthHits = 0;
                 this.wave = 1;
+                this.missionTime = 0;
+                this.passiveScoreTimer = 0;
+                this.comboTimer = 0;
+                this.comboMultiplier = 1;
+                this.comboStreak = 0;
                 
                 console.log('🛰️ SWARM DEFENSE initialized!', this.brain.useCPU ? 'CPU' : 'GPU');
                 document.getElementById('gpu-status').textContent = this.brain.useCPU ? 'CPU: FALLBACK' : 'GPU: READY';
@@ -1088,23 +1116,129 @@
                 return r;
             }
             
-            addScore(points, reason) {
-                this.score += points;
+            addScore(points, reason, options = {}) {
+                if (!Number.isFinite(points) || points === 0) return 0;
+
+                const { silent = false, applyMultiplier = true } = options;
+                const positive = points > 0;
+                const multiplier = positive && applyMultiplier ? this.comboMultiplier : 1;
+                const effectivePoints = positive
+                    ? Math.round(points * multiplier)
+                    : Math.round(points);
+
+                this.score = Math.max(0, this.score + effectivePoints);
                 if (this.score > this.highScore) {
                     this.highScore = this.score;
-                    localStorage.setItem('swarm_high_score', this.highScore.toString());
+                    if (this.storageAvailable) {
+                        window.localStorage.setItem('swarm_high_score', this.highScore.toString());
+                    }
                 }
-                console.log(`+${points} pts: ${reason}`);
+
+                if (!silent) {
+                    const prefix = effectivePoints > 0 ? '+' : '';
+                    const comboNote = positive && multiplier > 1
+                        ? ` (x${multiplier.toFixed(1)})`
+                        : '';
+                    console.log(`${prefix}${effectivePoints} pts: ${reason}${comboNote}`);
+                }
+
+                return effectivePoints;
+            }
+
+            advanceWave() {
+                this.wave++;
+                this.comboTimer = Math.max(this.comboTimer, 15);
+                this.deflectionsInWave = 0;
+
+                if (this.game && typeof this.game.onWaveAdvanced === 'function') {
+                    this.game.onWaveAdvanced(this.wave, { announce: true });
+                }
+
+                this.addScore(500 + this.wave * 100, `WAVE ${this.wave}`, { applyMultiplier: false });
+                console.log(`🌊 Wave ${this.wave} escalating!`);
+            }
+
+            updateScore(deltaTime, game = this.game) {
+                if (!Number.isFinite(deltaTime) || deltaTime <= 0) return;
+
+                this.missionTime += deltaTime;
+                this.passiveScoreTimer += deltaTime;
+
+                if (this.comboTimer > 0) {
+                    this.comboTimer = Math.max(0, this.comboTimer - deltaTime);
+                    if (this.comboTimer === 0) {
+                        this.comboMultiplier = 1;
+                        this.comboStreak = 0;
+                    }
+                }
+
+                while (this.passiveScoreTimer >= 1) {
+                    const hazard = 1 + (this.wave - 1) * 0.25 + (game ? game.asteroids.length * 0.1 : 0);
+                    const passivePoints = Math.round(8 * hazard);
+                    this.addScore(passivePoints, 'MISSION TIME', { silent: true, applyMultiplier: false });
+                    this.passiveScoreTimer -= 1;
+                }
+            }
+
+            resetMission() {
+                this.score = 0;
+                this.deflections = 0;
+                this.deflectionsInWave = 0;
+                this.earthHits = 0;
+                this.wave = 1;
+                this.missionTime = 0;
+                this.passiveScoreTimer = 0;
+                this.comboTimer = 0;
+                this.comboMultiplier = 1;
+                this.comboStreak = 0;
             }
             
-            onDeflection(asteroid) {
+            onDeflection(asteroid, context = {}) {
                 this.deflections++;
-                this.addScore(1000, 'DEFLECTION');
+                this.deflectionsInWave++;
+                this.comboStreak++;
+                this.comboTimer = 20;
+                this.comboMultiplier = Math.min(5, 1 + this.comboStreak * 0.3);
+
+                const totalDeltaV = context.totalDeltaV || 0;
+                const requiredDeltaV = context.requiredDeltaV || 0;
+                const etaSeconds = context.etaSeconds;
+
+                let bonus = this.wave * 200;
+                if (requiredDeltaV > 0) {
+                    const efficiency = Math.min(2, totalDeltaV / requiredDeltaV);
+                    bonus += Math.round(300 * efficiency);
+                } else {
+                    bonus += 150;
+                }
+
+                if (Number.isFinite(etaSeconds) && etaSeconds > 0) {
+                    const etaHours = etaSeconds / 3600;
+                    bonus += Math.min(400, Math.round(etaHours * 5));
+                }
+
+                this.addScore(1000 + bonus, 'DEFLECTION');
+
+                if (this.deflectionsInWave >= 3) {
+                    this.deflectionsInWave = 0;
+                    this.advanceWave();
+                }
             }
             
             onEarthHit() {
                 this.earthHits++;
                 this.addScore(-500, 'IMPACT');
+                this.comboStreak = 0;
+                this.comboMultiplier = 1;
+                this.comboTimer = 0;
+                this.deflectionsInWave = 0;
+
+                if (this.wave > 1) {
+                    this.wave = Math.max(1, this.wave - 1);
+                    if (this.game && typeof this.game.onWaveAdvanced === 'function') {
+                        this.game.onWaveAdvanced(this.wave, { announce: false, penalty: true });
+                    }
+                }
             }
 
             decayMemories() {
@@ -1191,7 +1325,7 @@
 
                 this.trajectoryLines = []; // Predicted paths
                 this.thrustVectors = []; // Thrust direction indicators
-                
+
                 // Object pools for performance
                 this.beamPool = [];
                 this.trajectoryPool = [];
@@ -1205,7 +1339,7 @@
                     beam.visible = false;
                     this.scene.add(beam);
                     this.beamPool.push(beam);
-                    
+
                     // Trajectory pool
                     const trajGeom = new THREE.BufferGeometry();
                     trajGeom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(303), 3)); // 101 points
@@ -1215,12 +1349,18 @@
                     this.scene.add(traj);
                     this.trajectoryPool.push(traj);
                 }
-                
+
                 this.beamPoolIndex = 0;
                 this.trajectoryPoolIndex = 0;
-                
-                this.agent = new SwarmDefenseAgent();
-                
+
+                this.elapsedTime = 0;
+                this.spawnTimer = 0;
+                this.spawnInterval = 12;
+                this.maxConcurrentAsteroids = 5;
+
+                this.agent = new SwarmDefenseAgent(this);
+                this.onWaveAdvanced(this.agent.wave, { announce: false });
+
                 this.currentTarget = null;
                 this.focusQuality = 0;
                 this.convergence = 0;
@@ -1604,7 +1744,22 @@
                 console.log(`🛰️ Swarm target set to ${this.targetSatelliteCount} satellites`);
                 console.log(`⚡ Total power now: ${(this.getTotalPowerMW()).toFixed(0)} MW`);
             }
-            
+
+            onWaveAdvanced(wave, { announce = true, penalty = false } = {}) {
+                const clampedWave = Math.max(1, wave || 1);
+                this.spawnInterval = Math.max(3, 12 - clampedWave * 1.1);
+                this.maxConcurrentAsteroids = Math.min(12, 5 + Math.floor(clampedWave * 1.5));
+
+                if (announce) {
+                    console.log(`🌊 Wave ${clampedWave}: spawn interval ${this.spawnInterval.toFixed(1)}s | max asteroids ${this.maxConcurrentAsteroids}`);
+                    if (clampedWave % 2 === 0) {
+                        this.deploySwarm();
+                    }
+                } else if (penalty) {
+                    console.log(`⚠️ Wave pressure reduced to ${clampedWave}`);
+                }
+            }
+
             reset() {
                 // Clear asteroids
                 this.asteroids.forEach(ast => {
@@ -1614,15 +1769,17 @@
                 this.asteroids = [];
                 this.currentTarget = null;
 
-                // Reset score
-                this.agent.earthHits = 0;
-                this.agent.deflections = 0;
-                this.agent.wave = 1;
+                // Reset score and AI memory
                 if (this.agent) {
+                    this.agent.resetMission();
                     this.agent.threatMap.clear();
                     this.agent.trajectoryMemory.clear();
                     this.agent.optimalPositions.clear();
+                    this.onWaveAdvanced(this.agent.wave, { announce: false });
                 }
+
+                this.elapsedTime = 0;
+                this.spawnTimer = 0;
 
                 this.modifiedEnergy = this.physics.computeModifiedEnergy();
 
@@ -1633,6 +1790,12 @@
                 const deltaTime = DT * this.timeScale;
                 this.physics.integrate(deltaTime);
                 this.modifiedEnergy = this.physics.computeModifiedEnergy();
+
+                this.elapsedTime += deltaTime;
+
+                if (this.agent && typeof this.agent.updateScore === 'function') {
+                    this.agent.updateScore(deltaTime, this);
+                }
 
                 if (this.agent && typeof this.agent.decayMemories === 'function') {
                     this.agent.decayMemories();
@@ -1803,11 +1966,21 @@
                 }
 
                 if (this.currentTarget) {
-                    this.updateMirrorFocus();
+                    this.updateMirrorFocus(deltaTime);
                 }
 
-                if (Math.random() < 0.002 && this.asteroids.length < 8) {
-                    this.spawnAsteroid();
+                const wave = this.agent ? this.agent.wave : 1;
+                const spawnInterval = Math.max(2.5, this.spawnInterval - (wave - 1) * 0.25);
+                const maxAsteroids = Math.min(12, this.maxConcurrentAsteroids + Math.floor((wave - 1) * 0.75));
+                this.spawnTimer += deltaTime;
+                while (this.spawnTimer >= spawnInterval) {
+                    if (this.asteroids.length < maxAsteroids) {
+                        this.spawnAsteroid();
+                    }
+                    this.spawnTimer -= spawnInterval;
+                    if (this.asteroids.length >= maxAsteroids) {
+                        break;
+                    }
                 }
 
                 this.updateUI();
@@ -1815,7 +1988,7 @@
                 this.renderer.render(this.scene, this.camera);
             }
             
-            updateMirrorFocus() {
+            updateMirrorFocus(deltaTime) {
                 if (!this.currentTarget || !this.currentTarget.userData || this.asteroids.indexOf(this.currentTarget) === -1) {
                     this.currentTarget = null;
                     // Hide pooled beams and thrust vectors
@@ -2018,6 +2191,8 @@
                     const velTowardEarth = this.currentTarget.userData.velocity.dot(
                         new THREE.Vector3().subVectors(this.earth.position, this.currentTarget.position).normalize()
                     ) * 1000;
+                    const closingSpeed = Math.max(0, velTowardEarth / 1000);
+                    const etaSeconds = closingSpeed > 0 ? distToEarth / closingSpeed : Infinity;
                     
                     // Progress indicator
                     if (totalDeltaV > 5 && totalDeltaV < 15 && Math.random() < 0.05) {
@@ -2038,7 +2213,12 @@
                         console.log(`  Spin induced: ${spinRate.toFixed(1)}°/s`);
                         console.log(`  Approach velocity: ${velTowardEarth.toFixed(1)} m/s ${approaching ? '(slowed)' : '(REVERSED!)'}`);
                         console.log(`  Distance: ${(distToEarth/150000).toFixed(2)} AU`);
-                        this.agent.onDeflection(this.currentTarget);
+                        this.agent.onDeflection(this.currentTarget, {
+                            totalDeltaV,
+                            requiredDeltaV,
+                            distToEarth,
+                            etaSeconds
+                        });
 
                         if (this.agent && typeof this.agent.forgetTrajectory === 'function') {
                             this.agent.forgetTrajectory(this.currentTarget.userData.id);
@@ -2101,11 +2281,38 @@
                 document.getElementById('decisions').textContent = this.agent.decisions;
                 
                 // Mission
-                document.getElementById('score-display').textContent = this.agent.score;
-                document.getElementById('high-score-display').textContent = this.agent.highScore;
-                document.getElementById('deflections').textContent = this.agent.deflections;
-                document.getElementById('earth-hits').textContent = this.agent.earthHits;
-                document.getElementById('wave').textContent = this.agent.wave;
+                const scoreEl = document.getElementById('score-display');
+                if (scoreEl) {
+                    scoreEl.textContent = this.agent.score.toLocaleString('en-US');
+                }
+                const highScoreEl = document.getElementById('high-score-display');
+                if (highScoreEl) {
+                    highScoreEl.textContent = this.agent.highScore.toLocaleString('en-US');
+                }
+                const deflectionsEl = document.getElementById('deflections');
+                if (deflectionsEl) {
+                    deflectionsEl.textContent = this.agent.deflections;
+                }
+                const earthHitsEl = document.getElementById('earth-hits');
+                if (earthHitsEl) {
+                    earthHitsEl.textContent = this.agent.earthHits;
+                }
+                const waveEl = document.getElementById('wave');
+                if (waveEl) {
+                    waveEl.textContent = this.agent.wave;
+                }
+                const comboEl = document.getElementById('combo');
+                if (comboEl) {
+                    comboEl.textContent = `${this.agent.comboMultiplier.toFixed(1)}×`;
+                }
+                const comboStreakEl = document.getElementById('combo-streak');
+                if (comboStreakEl) {
+                    comboStreakEl.textContent = this.agent.comboStreak;
+                }
+                const missionTimeEl = document.getElementById('mission-time');
+                if (missionTimeEl) {
+                    missionTimeEl.textContent = formatMissionTime(this.agent.missionTime);
+                }
                 
                 // Swarm
                 document.getElementById('sats-active').textContent = this.satellites.length;
