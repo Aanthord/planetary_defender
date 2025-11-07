@@ -199,7 +199,7 @@
                 <div class="key">Focus: <span id="focus-quality" class="stat">0.0</span></div>
                 <div class="key">Convergence: <span id="convergence" class="stat">0</span>%</div>
                 <div class="key">Intensity: <span id="intensity" class="stat">0.0</span> MW</div>
-                <div class="key">Ablation: <span id="ablation-rate" class="stat">0.0</span> kg/s</div>
+                <div class="key">Ablation: <span id="ablation-rate" class="stat">0.0</span> kg/s (equiv)</div>
             </div>
 
             <div class="section">
@@ -1369,6 +1369,7 @@
                 this.ablationRate = 0; // kg/s
                 this.thrustForce = 0; // N
                 this.modifiedEnergy = 0;
+                this.ablationTimeWarp = 3600; // simulate 1 hour of dwell per simulation second
 
                 this.spawnInitialSatellites();
 
@@ -1672,13 +1673,17 @@
                     .normalize()
                     .multiplyScalar(30 + Math.random() * 20); // REDUCED: 30-50 km/s (was 100-150)
                 
+                const mass = (4/3) * Math.PI * Math.pow(radius, 3) * 2200;
+
                 asteroid.userData = {
                     id: Math.random().toString(36),
                     velocity: dir.clone(),
                     originalVelocity: dir.clone(), // TRACK ORIGINAL
                     originalPosition: asteroid.position.clone(), // TRACK ORIGINAL
                     radius: radius,
-                    mass: (4/3) * Math.PI * Math.pow(radius, 3) * 2200, // kg (carbonaceous density)
+                    mass,
+                    originalMass: mass,
+                    minMass: mass * 0.1,
                     ablationDV: new THREE.Vector3(0, 0, 0),
                     beingEngaged: false
                 };
@@ -2077,20 +2082,23 @@
                     // Material properties
                     const H_VAP = 4e6;   // J/kg (vaporization enthalpy)
                     const V_EXH = 1000;  // m/s (ejecta velocity)
-                    
+
                     // Mass ablation rate: Power / vaporization enthalpy
                     const m_dot = P_laser / H_VAP; // kg/s
-                    
+
                     // Thrust from ejecta (rocket equation)
                     const F_thrust = m_dot * V_EXH; // Newtons
-                    
+
                     // Acceleration
                     const M_asteroid = this.currentTarget.userData.mass; // kg
                     const accel = F_thrust / M_asteroid; // m/s²
-                    
+
+                    // Aggregate continuous dwell time into each simulation step
+                    const effectiveSeconds = dt * this.ablationTimeWarp;
+
                     // Thrust direction: outward from focal point (surface normal)
                     const thrustDir = focalOffset.clone().normalize();
-                    
+
                     // Perpendicular component for optimal deflection
                     const velocity = this.currentTarget.userData.velocity.clone().normalize();
                     const toEarth = new THREE.Vector3()
@@ -2110,8 +2118,7 @@
                         .add(lateralBias.clone().multiplyScalar(0.3))
                         .normalize();
                     
-                    const thrustBoost = 100;
-                    const deltaV = finalThrustDir.clone().multiplyScalar((accel * dt * thrustBoost) / 1000);
+                    const deltaV = finalThrustDir.clone().multiplyScalar((accel * effectiveSeconds) / 1000);
                     this.currentTarget.userData.velocity.add(deltaV);
 
                     // Apply TORQUE from off-center thrust
@@ -2126,7 +2133,7 @@
                     
                     const torqueAxis = torque.normalize();
                     this.currentTarget.userData.angularVelocity.add(
-                        torqueAxis.multiplyScalar(angularAccel * dt)
+                        torqueAxis.multiplyScalar(angularAccel * effectiveSeconds)
                     );
                     
                     // Clamp angular velocity to prevent visual chaos
@@ -2144,9 +2151,20 @@
                     // Track cumulative ΔV
                     this.currentTarget.userData.ablationDV.add(deltaV);
                     const totalDeltaV = this.currentTarget.userData.ablationDV.length() * 1000;
-                    
+
+                    // Reduce asteroid mass as material is removed (maintain minimum)
+                    const ablatedMass = m_dot * effectiveSeconds;
+                    if (Number.isFinite(ablatedMass) && ablatedMass > 0) {
+                        const minMass = Math.max(1, this.currentTarget.userData.minMass || 0);
+                        const newMass = Math.max(
+                            minMass,
+                            this.currentTarget.userData.mass - ablatedMass
+                        );
+                        this.currentTarget.userData.mass = newMass;
+                    }
+
                     // Store metrics
-                    this.ablationRate = m_dot;
+                    this.ablationRate = m_dot * this.ablationTimeWarp;
                     this.thrustForce = F_thrust;
                     
                     // Log physics periodically
@@ -2371,7 +2389,10 @@
                 document.getElementById('convergence').textContent = Math.floor(this.convergence);
                 const intensityMW = this.intensity / 1e6; // Convert W to MW
                 document.getElementById('intensity').textContent = intensityMW.toFixed(2);
-                document.getElementById('ablation-rate').textContent = this.ablationRate.toFixed(3);
+                const ablationRateDisplay = this.ablationRate >= 1000
+                    ? this.ablationRate.toLocaleString(undefined, { maximumFractionDigits: 0 })
+                    : this.ablationRate.toFixed(3);
+                document.getElementById('ablation-rate').textContent = ablationRateDisplay;
                 
                 // Targets
                 document.getElementById('asteroid-count').textContent = this.asteroids.length;
@@ -2486,6 +2507,7 @@
         console.log('   • Vaporization: 4 MJ/kg');
         console.log('   • Ejecta velocity: 1,000 m/s');
         console.log('   • Mass ablation: ~13.75 kg/s (full power)');
+        console.log(`   • Time warp: ${space.ablationTimeWarp.toLocaleString()}× dwell integration`);
         console.log('');
         console.log('📡 DETECTION & ENGAGEMENT:');
         console.log('   • Detection: 2 AU (300M km)');
