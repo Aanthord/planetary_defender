@@ -28,3 +28,5 @@ Runs locally in any modern browser. No build.
 - Fly-inspired control: CX (heading), AL (sparse sense), MB (valence/dopamine), LAL (action gating)
 
 License: Apache-2.0 (demo). Sovereign/defense modules remain private. michael@pqg.info for licensing.
+
+Educational demo only; performance constants simplified; no controlled tech.
